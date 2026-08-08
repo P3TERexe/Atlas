@@ -83,6 +83,17 @@ final class AppSettings: ObservableObject {
         }
     }
     
+    // MARK: - Window Style Settings
+    
+    @Published var useStandardWindow: Bool {
+        didSet {
+            if useStandardWindow != oldValue {
+                defaults.set(useStandardWindow, forKey: "use_standard_window")
+                NotificationCenter.default.post(name: .atlasWindowStyleChanged, object: nil)
+            }
+        }
+    }
+    
     private let defaults = UserDefaults.standard
     
     /// Debounced keychain writes: typing an API key triggers delete+add
@@ -106,6 +117,8 @@ final class AppSettings: ObservableObject {
         } else {
             self.defaultProvider = .apple
         }
+        
+        self.useStandardWindow = defaults.bool(forKey: "use_standard_window")
     }
     
     private func scheduleKeychainSave(key: String, newValue: String, errorMessage: String) {

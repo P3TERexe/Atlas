@@ -27,6 +27,24 @@ struct SettingsView: View {
         TabView {
             // MARK: - Tab Provider AI
             Form {
+                // MARK: Stile Finestra Palette
+                Section("Stile Finestra Palette") {
+                    Picker("Tipo di Finestra Prompt", selection: $settings.useStandardWindow) {
+                        Label("Overlay Fluttuante HUD (Default)", systemImage: "sparkles")
+                            .tag(false)
+                        Label("Finestra Standard macOS (\"Finestra Vera\")", systemImage: "macwindow")
+                            .tag(true)
+                    }
+                    .pickerStyle(.radioGroup)
+                    
+                    Text(settings.useStandardWindow ?
+                        "✓ Modalità Finestra Vera attiva: la palette appare come una normale finestra macOS con barra del titolo, pulsanti di ridimensionamento e chiusura. Non si chiude automaticamente quando clicchi all'esterno." :
+                        "✓ Modalità Overlay HUD attiva: la palette appare come una barra fluttuante trasparente e si chiude automaticamente al click esterno."
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+                
                 Section("Provider Predefinito") {
                     Picker("Seleziona Provider", selection: $settings.defaultProvider) {
                         ForEach(AIProvider.allCases) { provider in

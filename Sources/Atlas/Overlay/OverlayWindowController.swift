@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let atlasWindowStyleChanged = Notification.Name("atlasWindowStyleChanged")
+}
+
 class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -10,21 +14,11 @@ class OverlayWindowController: NSWindowController {
     
     init() {
         let panel = OverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 440),
             styleMask: [.titled, .fullSizeContentView, .borderless],
             backing: .buffered,
             defer: false
         )
-        
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
-        panel.isMovableByWindowBackground = true
-        panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
         
         // The visual effect container (frosted glass background)
         let visualEffect = NSVisualEffectView()
@@ -51,7 +45,9 @@ class OverlayWindowController: NSWindowController {
         
         super.init(window: panel)
         
-        // Hide when clicking outside
+        applyWindowStyle()
+        
+        // Hide when clicking outside (only in HUD overlay mode)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidResignKey),
@@ -66,14 +62,61 @@ class OverlayWindowController: NSWindowController {
             name: .atlasHideOverlay,
             object: nil
         )
+        
+        // Update window style when settings change
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleStyleChange),
+            name: .atlasWindowStyleChanged,
+            object: nil
+        )
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
+    @objc func applyWindowStyle() {
+        guard let panel = self.window as? NSPanel else { return }
+        
+        let isStandard = AppSettings.shared.useStandardWindow
+        
+        if isStandard {
+            // Standard macOS Window ("Finestra Vera")
+            panel.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
+            panel.title = "Atlas — Prompt Command Palette"
+            panel.titlebarAppearsTransparent = false
+            panel.titleVisibility = .visible
+            panel.level = .normal
+            panel.isFloatingPanel = false
+            panel.hidesOnDeactivate = false
+            panel.isOpaque = true
+            panel.backgroundColor = .windowBackgroundColor
+            panel.hasShadow = true
+        } else {
+            // Floating Overlay HUD Panel (Default)
+            panel.styleMask = [.titled, .fullSizeContentView, .borderless]
+            panel.title = ""
+            panel.titlebarAppearsTransparent = true
+            panel.titleVisibility = .hidden
+            panel.level = .floating
+            panel.isFloatingPanel = true
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+        }
+    }
+    
+    @objc func handleStyleChange() {
+        applyWindowStyle()
+    }
+    
     @objc func windowDidResignKey() {
-        hideOverlay()
+        // Automatically hide on focus loss ONLY if in HUD overlay mode
+        if !AppSettings.shared.useStandardWindow {
+            hideOverlay()
+        }
     }
     
     @objc func hideFromNotification() {
@@ -83,6 +126,7 @@ class OverlayWindowController: NSWindowController {
     func showOverlay() {
         guard let window = self.window else { return }
         
+        applyWindowStyle()
         window.center()
         window.alphaValue = 0
         window.makeKeyAndOrderFront(nil)

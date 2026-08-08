@@ -59,7 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Trova ed attiva sempre il Finder in primo piano prima di aprire Atlas
         if let finderApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
-            finderApp.activate(options: [.activateIgnoringOtherApps])
+            finderApp.activate()
         }
         
         // Mostra l'overlay Atlas
