@@ -47,6 +47,12 @@ struct InstantActionParser {
         "comprimi pdf": Rule(tool: "pdf.compress", exts: MediaFormats.pdf),
         "compress pdf": Rule(tool: "pdf.compress", exts: MediaFormats.pdf),
         "ottimizza pdf": Rule(tool: "pdf.compress", exts: MediaFormats.pdf),
+        // Vision OCR Rename
+        "ocr": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
+        "ocr rename": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
+        "rinomina ocr": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
+        "rinomina con testo": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
+        "rinomina per contenuto": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
     ]
     
     static func parse(query: String, context: FinderContext) -> ActionGraph? {

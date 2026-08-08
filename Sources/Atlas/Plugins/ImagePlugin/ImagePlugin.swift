@@ -2,6 +2,7 @@ import Foundation
 import ImageIO
 import CoreGraphics
 import UniformTypeIdentifiers
+import Vision
 
 private struct ImageInput: Sendable {
     let inputURL: URL
@@ -49,6 +50,13 @@ class ImagePlugin: AtlasPlugin {
                 inputFormats: supportedFormats,
                 outputFormats: supportedFormats,
                 executor: StripExifImageAction()
+            ),
+            ToolCapability(
+                id: "image.ocrRename",
+                description: "Recognizes text inside images/screenshots using native Apple Vision OCR and auto-renames files based on their text content",
+                inputFormats: supportedFormats,
+                outputFormats: supportedFormats,
+                executor: OCRRenameImageAction()
             )
         ]
     }
@@ -444,4 +452,96 @@ final class StripExifImageAction: ActionExecutor {
         return ActionResult(success: true, outputFiles: outputFiles, message: "Rimossi metadati EXIF da \(outputFiles.count) immagini")
     }
 }
+
+// MARK: - Vision OCR Rename Action
+
+final class OCRRenameImageAction: ActionExecutor {
+    func validate(step: ActionStep, context: FinderContext) throws {
+        guard context.currentDirectory != nil else {
+            throw ExecutorError.validationFailed("Cartella corrente non disponibile.")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+        guard let currentDirectory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        
+        let inputs = step.inputs.compactMap { inputPath -> URL? in
+            let url = currentDirectory.appendingPathComponent(inputPath)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        
+        let targetURLs: [URL]
+        if !inputs.isEmpty {
+            targetURLs = inputs
+        } else {
+            let imageExts: Set<String> = ["png", "jpg", "jpeg", "webp", "heic", "tiff"]
+            targetURLs = context.selectedFiles.isEmpty ?
+                context.visibleFiles.filter { imageExts.contains($0.pathExtension.lowercased()) } :
+                context.selectedFiles.filter { imageExts.contains($0.pathExtension.lowercased()) }
+        }
+        
+        guard !targetURLs.isEmpty else {
+            return ActionResult(success: true, outputFiles: [], message: "Nessuna immagine trovata per il riconoscimento OCR.")
+        }
+        
+        var renamedURLs: [URL] = []
+        
+        for inputURL in targetURLs {
+            guard let text = recognizeText(in: inputURL), !text.isEmpty else { continue }
+            let sanitized = sanitizeFilename(text)
+            guard !sanitized.isEmpty else { continue }
+            
+            let ext = inputURL.pathExtension
+            let newName = "\(sanitized).\(ext)"
+            let targetURL = currentDirectory.appendingPathComponent(newName)
+            
+            if targetURL.path != inputURL.path && !FileManager.default.fileExists(atPath: targetURL.path) {
+                do {
+                    try FileManager.default.moveItem(at: inputURL, to: targetURL)
+                    renamedURLs.append(targetURL)
+                } catch {
+                    print("Failed to rename \(inputURL.lastPathComponent): \(error)")
+                }
+            }
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: renamedURLs,
+            message: "Rinominate \(renamedURLs.count) immagini in base al testo riconosciuto con Apple Vision OCR"
+        )
+    }
+    
+    private func recognizeText(in url: URL) -> String? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+        
+        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        
+        do {
+            try requestHandler.perform([request])
+            guard let observations = request.results, !observations.isEmpty else { return nil }
+            let recognizedStrings = observations.compactMap { $0.topCandidates(1).first?.string }
+            return recognizedStrings.prefix(3).joined(separator: "_")
+        } catch {
+            return nil
+        }
+    }
+    
+    private func sanitizeFilename(_ input: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+        let filtered = input.components(separatedBy: allowed.inverted).joined(separator: "")
+        let trimmed = filtered.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+        return String(trimmed.prefix(40))
+    }
+}
+
 

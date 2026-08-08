@@ -28,7 +28,8 @@ struct QuickActionGrid: View {
                 ActionPill(icon: "globe", label: "WebP", command: "webp", tint: .blue),
                 ActionPill(icon: "arrow.up.left.and.arrow.down.right", label: "Resize 1024px", command: "ridimensiona immagini a 1024px", tint: .blue),
                 ActionPill(icon: "circle.righthalf.filled", label: "B&W", command: "bw", tint: .blue),
-                ActionPill(icon: "xmark.shield", label: "Pulisci EXIF", command: "rimuovi metadati EXIF immagini", tint: .blue)
+                ActionPill(icon: "xmark.shield", label: "Pulisci EXIF", command: "rimuovi metadati EXIF immagini", tint: .blue),
+                ActionPill(icon: "text.viewfinder", label: "OCR Rename", command: "ocr", tint: .blue)
             ]
         ),
         QuickActionCategory(
