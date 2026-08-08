@@ -16,12 +16,8 @@ struct AtlasApp: App {
         MenuBarExtra {
             MenuBarView()
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkles")
-                    .symbolRenderingMode(.hierarchical)
-                Text("Atlas")
-                    .font(.system(size: 12, weight: .medium))
-            }
+            Image(systemName: "folder.badge.gearshape")
+                .symbolRenderingMode(.hierarchical)
         }
         .menuBarExtraStyle(.window)
         
