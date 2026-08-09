@@ -5,6 +5,7 @@ import FoundationModels
 
 enum AIProvider: String, CaseIterable, Identifiable, Sendable {
     case apple = "Apple Intelligence"
+    case opencode = "OpenCode AI (Zen)"
     case ollama = "Ollama (Locale)"
     case openai = "OpenAI"
     case claude = "Claude"
@@ -16,6 +17,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
     var icon: String {
         switch self {
         case .apple: return "brain.head.profile"
+        case .opencode: return "chevron.left.forwardslash.chevron.right"
         case .ollama: return "desktopcomputer"
         case .openai: return "globe"
         case .claude: return "sparkle"
@@ -447,6 +449,88 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         guard httpResponse.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw PlannerError.llmError("Errore provider custom (HTTP \(httpResponse.statusCode)): \(body)")
+        }
+        
+        guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = jsonObject["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw PlannerError.invalidResponse
+        }
+        
+        return try ActionGraphParser.parse(content)
+    }
+}
+
+// MARK: - OpenCode AI (Zen) Provider
+
+struct OpenCodeModelProvider: ModelProvider {
+    var apiKey: String
+    var model: String
+    
+    init(apiKey: String, model: String = "deepseek-v4-flash-free") {
+        self.apiKey = apiKey
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "deepseek-v4-flash-free" : model
+    }
+    
+    func plan(prompt: String) async throws -> ActionGraph {
+        guard !apiKey.isEmpty else {
+            throw PlannerError.llmError("OpenCode AI non configurato. Inserisci la tua API Key (opencode.ai/auth) nelle impostazioni.")
+        }
+        
+        let urlString = "https://opencode.ai/zen/v1/chat/completions"
+        guard let url = URL(string: urlString) else {
+            throw PlannerError.llmError("URL OpenCode non valido")
+        }
+        
+        let messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": """
+                You are Atlas, a filesystem automation assistant.
+                Output ONLY a valid raw JSON object matching this exact schema starting with { and ending with }:
+                {
+                  "steps": [
+                    {
+                      "id": "step_1",
+                      "tool": "image.convert",
+                      "inputs": ["file1.png"],
+                      "format": "jpg"
+                    }
+                  ]
+                }
+                Do not include markdown code fences, conversational prose, reasoning tags, or extra explanations!
+                """
+            ],
+            [
+                "role": "user",
+                "content": prompt
+            ]
+        ]
+        
+        let requestBody: [String: Any] = [
+            "model": model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 1024
+        ]
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PlannerError.llmError("Nessuna risposta da OpenCode AI")
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw PlannerError.llmError("Errore OpenCode AI (HTTP \(httpResponse.statusCode)): \(body)")
         }
         
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

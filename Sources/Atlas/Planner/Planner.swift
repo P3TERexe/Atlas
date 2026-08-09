@@ -47,6 +47,8 @@ class Planner {
         let provider: any ModelProvider = switch activeProvider {
         case .apple:
             AppleModelProvider()
+        case .opencode:
+            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel)
         case .ollama:
             OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel)
         case .openai:

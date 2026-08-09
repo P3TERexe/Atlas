@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var showOpenAIKey: Bool = false
     @State private var showClaudeKey: Bool = false
     @State private var showNvidiaKey: Bool = false
+    @State private var showOpenCodeKey: Bool = false
     @State private var showCustomKey: Bool = false
     
     @State private var testingOllama: Bool = false
@@ -19,6 +20,9 @@ struct SettingsView: View {
     
     @State private var testingNvidia: Bool = false
     @State private var nvidiaTestResult: String? = nil
+    
+    @State private var testingOpenCode: Bool = false
+    @State private var openCodeTestResult: String? = nil
     
     @State private var testingCustom: Bool = false
     @State private var customTestResult: String? = nil
@@ -70,6 +74,106 @@ struct SettingsView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                }
+                
+                // MARK: OpenCode AI (Zen)
+                Section("OpenCode AI (Zen)") {
+                    HStack {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .foregroundColor(.accentColor)
+                            .font(.title2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("OpenCode AI (Zen Inference API)")
+                                .font(.headline)
+                            Text("Ottieni l'API Key gratuita o pro su opencode.ai/auth.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    
+                    HStack {
+                        if showOpenCodeKey {
+                            TextField("API Key (opencode.ai/auth)", text: $settings.openCodeApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            SecureField("API Key (opencode.ai/auth)", text: $settings.openCodeApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        
+                        Button(action: { showOpenCodeKey.toggle() }) {
+                            Image(systemName: showOpenCodeKey ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    HStack {
+                        TextField("Modello", text: $settings.openCodeModel)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        Menu {
+                            Button("deepseek-v4-flash-free (Gratuito)") {
+                                settings.openCodeModel = "deepseek-v4-flash-free"
+                            }
+                            Button("big-pickle (Gratuito)") {
+                                settings.openCodeModel = "big-pickle"
+                            }
+                            Button("mimo-v2.5-free (Gratuito)") {
+                                settings.openCodeModel = "mimo-v2.5-free"
+                            }
+                            Button("minimax-m3-free (Gratuito)") {
+                                settings.openCodeModel = "minimax-m3-free"
+                            }
+                            Button("nemotron-3-ultra-free (Gratuito)") {
+                                settings.openCodeModel = "nemotron-3-ultra-free"
+                            }
+                            Divider()
+                            Button("deepseek-v4-pro (Pro)") {
+                                settings.openCodeModel = "deepseek-v4-pro"
+                            }
+                            Button("gpt-5.6-sol (Pro)") {
+                                settings.openCodeModel = "gpt-5.6-sol"
+                            }
+                            Button("kimi-k2.6 (Pro)") {
+                                settings.openCodeModel = "kimi-k2.6"
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Seleziona un modello OpenCode Zen")
+                    }
+                    
+                    HStack {
+                        if !settings.openCodeApiKey.isEmpty {
+                            Label("Salvata nel Keychain", systemImage: "lock.shield.fill")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        } else {
+                            Label("Chiave assente (opencode.ai/auth)", systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button("Test API") {
+                            testOpenCodeConnection()
+                        }
+                        .disabled(testingOpenCode || settings.openCodeApiKey.isEmpty)
+                        
+                        Button("Rimuovi") {
+                            settings.removeOpenCodeKey()
+                        }
+                        .disabled(settings.openCodeApiKey.isEmpty)
+                    }
+                    
+                    if let result = openCodeTestResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundColor(result.hasPrefix("✓") ? .green : .red)
+                    }
                 }
                 
                 // MARK: NVIDIA Build
@@ -443,6 +547,40 @@ struct SettingsView: View {
     }
     
     // MARK: - Test API Actions
+    
+    private func testOpenCodeConnection() {
+        testingOpenCode = true
+        openCodeTestResult = nil
+        
+        guard let url = URL(string: "https://opencode.ai/zen/v1/models") else { return }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(settings.openCodeApiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 6
+        
+        Task {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: request)
+                await MainActor.run {
+                    self.testingOpenCode = false
+                    if let http = response as? HTTPURLResponse {
+                        switch http.statusCode {
+                        case 200:
+                            self.openCodeTestResult = "✓ API Key OpenCode valida e server connesso!"
+                        case 401, 403:
+                            self.openCodeTestResult = "❌ API Key OpenCode non valida (\(http.statusCode)). Generane una nuova su opencode.ai/auth."
+                        default:
+                            self.openCodeTestResult = "✓ Connessione a OpenCode stabilita (HTTP \(http.statusCode))."
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.testingOpenCode = false
+                    self.openCodeTestResult = "❌ Connessione a OpenCode fallita: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
     
     private func testOpenAIConnection() {
         testingOpenAI = true

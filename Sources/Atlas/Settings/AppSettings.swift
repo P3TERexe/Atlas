@@ -33,6 +33,22 @@ final class AppSettings: ObservableObject {
         }
     }
     
+    // MARK: - OpenCode AI (Zen)
+    
+    @Published var openCodeApiKey: String = "" {
+        didSet {
+            scheduleKeychainSave(key: "opencode_api_key", newValue: openCodeApiKey, errorMessage: "Impossibile salvare la chiave OpenCode nel Keychain.")
+        }
+    }
+    
+    @Published var openCodeModel: String {
+        didSet {
+            if openCodeModel != oldValue {
+                defaults.set(openCodeModel, forKey: "opencode_model")
+            }
+        }
+    }
+    
     @Published var ollamaEndpoint: String {
         didSet {
             if ollamaEndpoint != oldValue {
@@ -105,8 +121,10 @@ final class AppSettings: ObservableObject {
         self.openAIApiKey = KeychainStore.load(key: "openai_api_key") ?? ""
         self.claudeApiKey = KeychainStore.load(key: "claude_api_key") ?? ""
         self.nvidiaApiKey = KeychainStore.load(key: "nvidia_api_key") ?? ""
+        self.openCodeApiKey = KeychainStore.load(key: "opencode_api_key") ?? ""
         self.customApiKey = KeychainStore.load(key: "custom_api_key") ?? ""
         self.nvidiaModel = defaults.string(forKey: "nvidia_model") ?? "meta/llama-3.3-70b-instruct"
+        self.openCodeModel = defaults.string(forKey: "opencode_model") ?? "deepseek-v4-flash-free"
         self.ollamaEndpoint = defaults.string(forKey: "ollama_endpoint") ?? "http://localhost:11434/api/generate"
         self.ollamaModel = defaults.string(forKey: "ollama_model") ?? "llama3"
         self.customBaseURL = defaults.string(forKey: "custom_base_url") ?? "https://api.openai.com/v1"
@@ -133,6 +151,11 @@ final class AppSettings: ObservableObject {
                 keychainError = errorMessage
             }
         }
+    }
+    
+    func removeOpenCodeKey() {
+        _ = KeychainStore.delete(key: "opencode_api_key")
+        openCodeApiKey = ""
     }
     
     func removeOpenAIKey() {
