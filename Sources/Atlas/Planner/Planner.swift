@@ -36,21 +36,24 @@ class Planner {
         let lower = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if lower.isEmpty { return QueryComplexity(isComplex: false, reason: nil) }
         
-        let complexKeywords = [
-            "se ", "in base a", "se il file", "condizione", "script",
-            "analizza", "confronta", "ordina per dimensione", "filtra",
-            "se contiene", "estrai testo", "calcola totale", "organizza per data",
-            "se la risoluzione", "solo se", " altrimenti ", "più grande di", "maggiore di",
-            " e poi ", " e dopo ", " e infine ", " copie", " cartella", " cartelle"
-        ]
+        // Language-Agnostic Structural Detection:
+        // 1. Multiple clause separators (commas, semicolons, dashes, line breaks)
+        let clauseSeparators = CharacterSet(charactersIn: ",;—–-\n")
+        let clauses = lower.components(separatedBy: clauseSeparators).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         
-        let wordCount = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty }).count
-        let hasComplexKeyword = complexKeywords.contains { lower.contains($0) }
+        // 2. Numerical repetition / count requests in any language (e.g. "7 copies", "10 volte", "3 files", "5x", "100MB")
+        let hasNumberPattern = lower.range(of: "\\b\\d+\\b", options: .regularExpression) != nil
         
-        if hasComplexKeyword || wordCount > 25 {
+        // 3. Multi-word queries with sequence structure or long word count
+        let words = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty })
+        let wordCount = words.count
+        
+        let isMultiClause = clauses.count > 1 || (hasNumberPattern && wordCount > 4)
+        
+        if isMultiClause || wordCount > 15 {
             return QueryComplexity(
                 isComplex: true,
-                reason: "Query articolata con condizioni o regole logiche multiple"
+                reason: "Query multilingua con sequenza di azioni o parametri numerici"
             )
         }
         

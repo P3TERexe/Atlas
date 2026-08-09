@@ -555,10 +555,9 @@ struct OpenCodeModelProvider: ModelProvider {
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": isComplex ? 3500 : 1200
+            "max_tokens": isComplex ? 3500 : 2500
         ]
         if !isComplex {
-            requestBody["thinking"] = ["type": "disabled"]
             requestBody["reasoning_effort"] = "low"
         } else {
             requestBody["reasoning_effort"] = "medium"
