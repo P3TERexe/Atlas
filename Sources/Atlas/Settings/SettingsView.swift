@@ -144,6 +144,10 @@ struct SettingsView: View {
                     .pickerStyle(.radioGroup)
                 }
                 
+                Section("Pensiero AI") {
+                    Toggle("Disabilita ragionamento esteso (Modalità Veloce)", isOn: $settings.disableThinking)
+                }
+                
                 Section("Provider Predefinito") {
                     Picker("Seleziona Provider", selection: $settings.defaultProvider) {
                         ForEach(AIProvider.allCases) { provider in

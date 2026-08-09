@@ -134,6 +134,15 @@ struct CommandPaletteView: View {
                         Label("Guida", systemImage: "questionmark.circle")
                     }
                     
+                    Button(action: {
+                        AppSettings.shared.disableThinking.toggle()
+                    }) {
+                        Label(
+                            AppSettings.shared.disableThinking ? "Pensiero AI: Disabilitato (Veloce)" : "Pensiero AI: Abilitato",
+                            systemImage: AppSettings.shared.disableThinking ? "bolt.fill" : "brain.head.profile"
+                        )
+                    }
+                    
                     Divider()
                     
                     Button(action: {

@@ -68,7 +68,8 @@ class Planner {
             return instantGraph
         }
         
-        let complexity = Self.analyzeComplexity(query: query)
+        let rawComplexity = Self.analyzeComplexity(query: query)
+        let isComplex = AppSettings.shared.disableThinking ? false : rawComplexity.isComplex
         let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
         let initialPrompt = activeRules.isEmpty
             ? promptBuilder.buildCompactPrompt(query: query, context: context)
@@ -97,7 +98,7 @@ class Planner {
         
         // Attempt 1: Standard generation
         do {
-            let graph = try await provider.plan(prompt: initialPrompt, isComplex: complexity.isComplex)
+            let graph = try await provider.plan(prompt: initialPrompt, isComplex: isComplex)
             let sorted = try graph.topologicallySorted()
             
             // Validation Pass 1
@@ -116,7 +117,7 @@ class Planner {
                 """
                 lastPrompt = retryPrompt
                 
-                let secondGraph = try await provider.plan(prompt: retryPrompt, isComplex: complexity.isComplex)
+                let secondGraph = try await provider.plan(prompt: retryPrompt, isComplex: isComplex)
                 let secondSorted = try secondGraph.topologicallySorted()
                 try PlanValidator.validate(graph: secondSorted, query: query, context: context)
                 

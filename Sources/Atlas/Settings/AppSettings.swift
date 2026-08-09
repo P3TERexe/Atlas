@@ -110,6 +110,16 @@ final class AppSettings: ObservableObject {
         }
     }
     
+    // MARK: - Thinking / Reasoning Settings
+    
+    @Published var disableThinking: Bool {
+        didSet {
+            if disableThinking != oldValue {
+                defaults.set(disableThinking, forKey: "disable_thinking")
+            }
+        }
+    }
+    
     private let defaults = UserDefaults.standard
     
     /// Debounced keychain writes: typing an API key triggers delete+add
@@ -137,6 +147,7 @@ final class AppSettings: ObservableObject {
         }
         
         self.useStandardWindow = defaults.bool(forKey: "use_standard_window")
+        self.disableThinking = defaults.bool(forKey: "disable_thinking")
     }
     
     private func scheduleKeychainSave(key: String, newValue: String, errorMessage: String) {
