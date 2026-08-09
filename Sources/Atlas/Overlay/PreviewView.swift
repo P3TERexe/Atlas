@@ -176,24 +176,28 @@ struct StepCardView: View {
             if !step.inputs.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(step.inputs, id: \.self) { input in
-                        HStack(spacing: 6) {
+                        HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "doc.fill")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
+                                .padding(.top, 2)
                             
                             Text(input)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
                             
                             if step.format != nil {
                                 Image(systemName: "arrow.right")
                                     .font(.system(size: 9))
                                     .foregroundColor(.secondary)
+                                    .padding(.top, 3)
                                 
                                 let outputName = step.outputName(for: input)
                                 Text(outputName)
                                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                     .foregroundColor(.green)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -203,35 +207,39 @@ struct StepCardView: View {
             
             // Shell Commands Block
             if let commands = shellCommands, !commands.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Comando Terminale Eseguito:")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    
                     ForEach(Array(commands.enumerated()), id: \.offset) { _, command in
-                        HStack(spacing: 6) {
+                        HStack(alignment: .top, spacing: 6) {
                             Text("$")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 .foregroundColor(.accentColor)
+                            
                             Text(command)
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.primary)
                                 .textSelection(.enabled)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .fixedSize(horizontal: false, vertical: true)
                             
-                            Spacer()
+                            Spacer(minLength: 4)
                             
                             Button(action: {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(command, forType: .string)
                             }) {
                                 Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 11))
                                     .foregroundColor(.secondary)
                             }
                             .buttonStyle(.plain)
                             .help("Copia comando terminale")
                         }
-                        .padding(6)
-                        .background(Color.black.opacity(0.25))
-                        .cornerRadius(5)
+                        .padding(8)
+                        .background(Color.black.opacity(0.3))
+                        .cornerRadius(6)
                     }
                 }
             }
