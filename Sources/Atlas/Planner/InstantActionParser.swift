@@ -60,6 +60,13 @@ struct InstantActionParser {
         "unisci immagini in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
         "foto in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
         "images to pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        // File selection shorthands
+        "seleziona le foto": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona foto": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona le immagini": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona immagini": Rule(tool: "file.select", exts: MediaFormats.image),
+        "select photos": Rule(tool: "file.select", exts: MediaFormats.image),
+        "select images": Rule(tool: "file.select", exts: MediaFormats.image),
     ]
     
     static func parse(query: String, context: FinderContext) -> ActionGraph? {

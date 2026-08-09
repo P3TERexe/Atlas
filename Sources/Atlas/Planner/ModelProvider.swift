@@ -125,7 +125,7 @@ struct OllamaModelProvider: ModelProvider {
             "format": "json",
             "options": [
                 "temperature": 0.0,
-                "num_predict": 350
+                "num_predict": 1200
             ]
         ]
         
@@ -184,7 +184,7 @@ struct OpenAIModelProvider: ModelProvider {
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 350
+            "max_tokens": 1200
         ]
         
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
@@ -237,7 +237,7 @@ struct ClaudeModelProvider: ModelProvider {
         
         let requestBody: [String: Any] = [
             "model": model,
-            "max_tokens": 350,
+            "max_tokens": 1200,
             "temperature": 0.0,
             "system": "You are a filesystem assistant. Translate the user request into a structured ActionGraph JSON. Use tool IDs from the available tools list. Output ONLY the raw JSON object, no markdown.",
             "messages": [
@@ -313,7 +313,7 @@ struct NvidiaModelProvider: ModelProvider {
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": 350
+            "max_tokens": 1200
         ]
         
         guard let url = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions") else {
@@ -434,8 +434,9 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         let requestBody: [String: Any] = [
             "model": activeModel,
             "messages": messages,
+            "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 350
+            "max_tokens": 1200
         ]
         
         var request = URLRequest(url: url)
@@ -495,18 +496,18 @@ struct OpenCodeModelProvider: ModelProvider {
                 "role": "system",
                 "content": """
                 You are Atlas, a filesystem automation assistant.
-                Output ONLY a valid raw JSON object matching this exact schema starting with { and ending with }:
+                You MUST output ONLY a raw JSON object starting with { and ending with }.
+                Do NOT output any conversational text, thinking, or introduction before the JSON!
+                Example valid schema:
                 {
                   "steps": [
                     {
                       "id": "step_1",
-                      "tool": "image.convert",
-                      "inputs": ["file1.png"],
-                      "format": "jpg"
+                      "tool": "file.select",
+                      "inputs": ["foto_1.jpg"]
                     }
                   ]
                 }
-                Do not include markdown code fences, conversational prose, reasoning tags, or extra explanations!
                 """
             ],
             [
@@ -518,8 +519,9 @@ struct OpenCodeModelProvider: ModelProvider {
         let requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
+            "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 350
+            "max_tokens": 1200
         ]
         
         var request = URLRequest(url: url)
