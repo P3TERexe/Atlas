@@ -30,7 +30,13 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
 // MARK: - Provider Protocol
 
 protocol ModelProvider: Sendable {
-    func plan(prompt: String) async throws -> ActionGraph
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph
+}
+
+extension ModelProvider {
+    func plan(prompt: String) async throws -> ActionGraph {
+        try await plan(prompt: prompt, isComplex: false)
+    }
 }
 
 // MARK: - Shared JSON extraction
@@ -81,7 +87,7 @@ enum ActionGraphParser {
 
 struct AppleModelProvider: ModelProvider {
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         let model = SystemLanguageModel.default
         
         guard model.isAvailable else {
@@ -117,16 +123,21 @@ struct OllamaModelProvider: ModelProvider {
         self.model = model
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        var options: [String: Any] = [
+            "temperature": 0.0,
+            "num_predict": isComplex ? 3500 : 1200
+        ]
+        if !isComplex {
+            options["thinking"] = false
+        }
+        
         let requestBody: [String: Any] = [
             "model": model,
             "prompt": prompt,
             "stream": false,
             "format": "json",
-            "options": [
-                "temperature": 0.0,
-                "num_predict": 2500
-            ]
+            "options": options
         ]
         
         guard let url = URL(string: endpoint) else {
@@ -163,7 +174,7 @@ struct OpenAIModelProvider: ModelProvider {
         self.apiKey = apiKey
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         guard !apiKey.isEmpty else {
             throw PlannerError.llmError("OpenAI non configurato. Imposta la tua API key nelle impostazioni.")
         }
@@ -179,13 +190,18 @@ struct OpenAIModelProvider: ModelProvider {
             ]
         ]
         
-        let requestBody: [String: Any] = [
+        var requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 2500
+            "max_tokens": isComplex ? 3500 : 1200
         ]
+        if isComplex {
+            requestBody["reasoning_effort"] = "medium"
+        } else {
+            requestBody["reasoning_effort"] = "low"
+        }
         
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
             throw PlannerError.llmError("URL OpenAI non valido")
@@ -230,14 +246,14 @@ struct ClaudeModelProvider: ModelProvider {
         self.apiKey = apiKey
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         guard !apiKey.isEmpty else {
             throw PlannerError.llmError("Claude non configurato. Imposta la tua API key nelle impostazioni.")
         }
         
         let requestBody: [String: Any] = [
             "model": model,
-            "max_tokens": 2500,
+            "max_tokens": isComplex ? 3500 : 1200,
             "temperature": 0.0,
             "system": "You are a filesystem assistant. Translate the user request into a structured ActionGraph JSON. Use tool IDs from the available tools list. Output ONLY the raw JSON object, no markdown.",
             "messages": [
@@ -293,7 +309,7 @@ struct NvidiaModelProvider: ModelProvider {
         }
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         guard !apiKey.isEmpty else {
             throw PlannerError.llmError("NVIDIA Build non configurato. Imposta la tua API key nelle impostazioni.")
         }
@@ -309,12 +325,15 @@ struct NvidiaModelProvider: ModelProvider {
             ]
         ]
         
-        let requestBody: [String: Any] = [
+        var requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": 2500
+            "max_tokens": isComplex ? 3500 : 1200
         ]
+        if !isComplex {
+            requestBody["thinking"] = ["type": "disabled"]
+        }
         
         guard let url = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions") else {
             throw PlannerError.llmError("URL NVIDIA Build non valido")
@@ -388,7 +407,7 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         self.apiKey = apiKey
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         guard !baseURL.isEmpty else {
             throw PlannerError.llmError("Provider custom non configurato. Imposta il Base URL nelle impostazioni.")
         }
@@ -431,13 +450,17 @@ struct OpenAICompatibleModelProvider: ModelProvider {
             ]
         ]
         
-        let requestBody: [String: Any] = [
+        var requestBody: [String: Any] = [
             "model": activeModel,
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 2500
+            "max_tokens": isComplex ? 3500 : 1200
         ]
+        if !isComplex {
+            requestBody["thinking"] = ["type": "disabled"]
+            requestBody["reasoning_effort"] = "low"
+        }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -481,7 +504,7 @@ struct OpenCodeModelProvider: ModelProvider {
         self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "deepseek-v4-flash-free" : model
     }
     
-    func plan(prompt: String) async throws -> ActionGraph {
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
         guard !apiKey.isEmpty else {
             throw PlannerError.llmError("OpenCode AI non configurato. Inserisci la tua API Key (opencode.ai/auth) nelle impostazioni.")
         }
@@ -516,13 +539,19 @@ struct OpenCodeModelProvider: ModelProvider {
             ]
         ]
         
-        let requestBody: [String: Any] = [
+        var requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 2500
+            "max_tokens": isComplex ? 3500 : 1200
         ]
+        if !isComplex {
+            requestBody["thinking"] = ["type": "disabled"]
+            requestBody["reasoning_effort"] = "low"
+        } else {
+            requestBody["reasoning_effort"] = "medium"
+        }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

@@ -81,6 +81,40 @@ struct CommandPaletteView: View {
                         .controlSize(.small)
                 }
                 
+                // Thinking Mode / Complexity Indicator Badge
+                let complexity = Planner.analyzeComplexity(query: query)
+                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if complexity.isComplex {
+                        HStack(spacing: 4) {
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: 10))
+                                .foregroundColor(.purple)
+                            Text("Ragionamento AI")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.purple)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.15))
+                        .cornerRadius(5)
+                        .help("Query complessa: l'AI utilizzerà il ragionamento esteso per valutare le regole logiche")
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(.orange)
+                            Text("Veloce (0ms)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.06))
+                        .cornerRadius(5)
+                        .help("Query diretta: il ragionamento è disabilitato per risposte istantanee")
+                    }
+                }
+                
                 // Model selector
                 Menu {
                     ForEach(AIProvider.allCases) { provider in
