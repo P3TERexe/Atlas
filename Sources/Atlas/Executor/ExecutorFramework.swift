@@ -20,11 +20,26 @@ enum ExecutorError: Error, LocalizedError {
 struct ProgressUpdate: Sendable {
     let stepIndex: Int
     let totalSteps: Int
+    let itemIndex: Int
+    let totalItems: Int
     let message: String
+    let detail: String?
+    
+    init(stepIndex: Int, totalSteps: Int, itemIndex: Int = 0, totalItems: Int = 1, message: String, detail: String? = nil) {
+        self.stepIndex = stepIndex
+        self.totalSteps = totalSteps
+        self.itemIndex = itemIndex
+        self.totalItems = totalItems
+        self.message = message
+        self.detail = detail
+    }
     
     var fraction: Double {
-        guard totalSteps > 0 else { return 0 }
-        return Double(stepIndex) / Double(totalSteps)
+        guard totalSteps > 0 else { return 0.05 }
+        let stepWeight = 1.0 / Double(totalSteps)
+        let base = Double(stepIndex) * stepWeight
+        let subProgress = totalItems > 0 ? (Double(itemIndex) / Double(totalItems)) : 0.0
+        return min(0.99, base + (stepWeight * subProgress))
     }
 }
 
@@ -52,7 +67,10 @@ class ExecutorFramework {
             progress(ProgressUpdate(
                 stepIndex: index,
                 totalSteps: graph.steps.count,
-                message: "Validazione dello step \(index + 1)/\(graph.steps.count): \(step.tool)"
+                itemIndex: 0,
+                totalItems: 1,
+                message: "Validazione dello step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                detail: "Verifica prerequisiti..."
             ))
             
             do {
@@ -69,13 +87,25 @@ class ExecutorFramework {
             progress(ProgressUpdate(
                 stepIndex: index,
                 totalSteps: graph.steps.count,
-                message: "Esecuzione step \(index + 1)/\(graph.steps.count): \(step.tool)"
+                itemIndex: 0,
+                totalItems: 1,
+                message: "Esecuzione step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                detail: "Avvio operazioni..."
             ))
             
-            // 2. Execution
+            // 2. Execution with sub-item real-time progress updates
             let result: ActionResult
             do {
-                result = try await executor.execute(step: step, context: context)
+                result = try await executor.execute(step: step, context: context) { itemIdx, totalItems, detailMsg in
+                    progress(ProgressUpdate(
+                        stepIndex: index,
+                        totalSteps: graph.steps.count,
+                        itemIndex: itemIdx,
+                        totalItems: totalItems,
+                        message: "Step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                        detail: detailMsg
+                    ))
+                }
             } catch {
                 transaction.status = .failed
                 transaction.completedAt = Date()

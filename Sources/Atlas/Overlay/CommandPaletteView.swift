@@ -245,22 +245,42 @@ struct CommandPaletteView: View {
                 } else {
                 ScrollView {
                     if let update = progress, isExecuting {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView(value: update.fraction)
-                                .progressViewStyle(.linear)
+                        VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text(update.message)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(.system(size: 13, weight: .bold))
                                     .lineLimit(1)
                                 Spacer()
-                                Text("\(update.stepIndex + 1)/\(update.totalSteps)")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundColor(.secondary)
+                                Text("\(Int(update.fraction * 100))%")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentColor.opacity(0.18))
+                                    .foregroundColor(.accentColor)
+                                    .cornerRadius(4)
+                            }
+                            
+                            ProgressView(value: update.fraction)
+                                .progressViewStyle(.linear)
+                                .animation(.easeOut(duration: 0.15), value: update.fraction)
+                            
+                            if let detail = update.detail {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "gearshape.2.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                    Text(detail)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
                             }
                         }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Color.primary.opacity(0.04))
+                        .cornerRadius(8)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
                     }
                     
                     if let message = executionMessage {

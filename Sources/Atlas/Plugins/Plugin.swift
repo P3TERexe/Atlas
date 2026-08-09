@@ -14,13 +14,19 @@ struct ActionResult: Sendable {
     }
 }
 
+typealias ItemProgressCallback = @Sendable (_ itemIndex: Int, _ totalItems: Int, _ detailMessage: String) -> Void
+
 protocol ActionExecutor: Sendable {
     func validate(step: ActionStep, context: FinderContext) throws
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]?
 }
 
 extension ActionExecutor {
+    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+        try await execute(step: step, context: context, progress: nil)
+    }
+    
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
         return nil
     }

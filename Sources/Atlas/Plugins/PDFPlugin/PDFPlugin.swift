@@ -305,7 +305,7 @@ final class ImagesToPDFAction: ActionExecutor {
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         let inputs = resolveImageURLs(step: step, context: context)
         guard let directory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
@@ -318,7 +318,8 @@ final class ImagesToPDFAction: ActionExecutor {
         let pdfDocument = PDFDocument()
         var pagesAdded = 0
         
-        for inputURL in inputs {
+        for (index, inputURL) in inputs.enumerated() {
+            progress?(index + 1, inputs.count, "Generazione pagina \(index + 1)/\(inputs.count): \(inputURL.lastPathComponent)")
             guard let image = NSImage(contentsOf: inputURL),
                   let pdfPage = PDFPage(image: image) else { continue }
             pdfDocument.insert(pdfPage, at: pdfDocument.pageCount)

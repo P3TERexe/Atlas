@@ -125,40 +125,31 @@ final class ConvertImageAction: ActionExecutor {
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         let inputURLs = resolveInputURLs(step: step, context: context)
         guard !inputURLs.isEmpty else {
             return ActionResult(success: true, outputFiles: [], message: "Nessun file immagine trovato da elaborare.")
         }
         
-        // If format is nil but grayscale is requested, maintain input extension
         let isGrayscale = step.grayscale == true
+        var converted: [URL] = []
+        let totalCount = inputURLs.count
         
-        let converted = try await withThrowingTaskGroup(of: URL.self) { group in
-            var outputFiles: [URL] = []
-            outputFiles.reserveCapacity(inputURLs.count)
+        for (index, inputURL) in inputURLs.enumerated() {
+            progress?(index + 1, totalCount, "Elaborazione \(index + 1)/\(totalCount): \(inputURL.lastPathComponent)")
             
-            for inputURL in inputURLs {
-                let formatForInput = step.format ?? inputURL.pathExtension
-                let targetExtension = outputExtension(formatForInput)
-                let outputURL = self.outputURL(for: inputURL, extensionName: targetExtension, isGrayscale: isGrayscale)
-                
-                let quality = step.quality
-                group.addTask {
-                    do {
-                        try self.convertImageIO(inputURL: inputURL, outputURL: outputURL, format: formatForInput, grayscale: isGrayscale, quality: quality)
-                        return outputURL
-                    } catch {
-                        try await self.convertCLIFallback(inputURL: inputURL, outputURL: outputURL, format: formatForInput, grayscale: isGrayscale)
-                        return outputURL
-                    }
-                }
-            }
+            let formatForInput = step.format ?? inputURL.pathExtension
+            let targetExtension = outputExtension(formatForInput)
+            let outputURL = self.outputURL(for: inputURL, extensionName: targetExtension, isGrayscale: isGrayscale)
+            let quality = step.quality
             
-            for try await output in group {
-                outputFiles.append(output)
+            do {
+                try self.convertImageIO(inputURL: inputURL, outputURL: outputURL, format: formatForInput, grayscale: isGrayscale, quality: quality)
+                converted.append(outputURL)
+            } catch {
+                try await self.convertCLIFallback(inputURL: inputURL, outputURL: outputURL, format: formatForInput, grayscale: isGrayscale)
+                converted.append(outputURL)
             }
-            return outputFiles
         }
         
         let label = isGrayscale ? "in Bianco e Nero" : "nel formato specificato"
