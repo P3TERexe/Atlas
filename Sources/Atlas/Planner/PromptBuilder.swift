@@ -111,11 +111,12 @@ class PromptBuilder {
         
         RULES:
         1. If files are selected, include ALL selected filenames in 'inputs'.
-        2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.).
+        2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.). Automatically fix typos in format (e.g. 'jepeg' -> 'jpg').
         3. Set 'grayscale': true for Black & White.
         4. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
         5. For "comprimi foto/immagini" (compress photos), use ONLY 'file.zip'!
         6. For ANY custom/generic request without a specific tool, use tool 'shell.run' and set 'format' to the zsh command line.
+        7. For multi-step requests (e.g. convert AND make N copies in a new directory), output a sequence of steps with 'dependsOn' or use 'shell.run' with a compound zsh command.
         """
     }
 }

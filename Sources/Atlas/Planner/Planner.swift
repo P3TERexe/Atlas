@@ -1,5 +1,10 @@
 import Foundation
 
+struct QueryComplexity: Sendable {
+    let isComplex: Bool
+    let reason: String?
+}
+
 enum PlannerError: Error, LocalizedError {
     case invalidResponse
     case decodingFailed(String)
@@ -35,13 +40,14 @@ class Planner {
             "se ", "in base a", "se il file", "condizione", "script",
             "analizza", "confronta", "ordina per dimensione", "filtra",
             "se contiene", "estrai testo", "calcola totale", "organizza per data",
-            "se la risoluzione", "solo se", " altrimenti ", "più grande di", "maggiore di"
+            "se la risoluzione", "solo se", " altrimenti ", "più grande di", "maggiore di",
+            " e poi ", " e dopo ", " e infine ", " copie", " cartella", " cartelle"
         ]
         
         let wordCount = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty }).count
         let hasComplexKeyword = complexKeywords.contains { lower.contains($0) }
         
-        if hasComplexKeyword || wordCount > 10 {
+        if hasComplexKeyword || wordCount > 25 {
             return QueryComplexity(
                 isComplex: true,
                 reason: "Query articolata con condizioni o regole logiche multiple"

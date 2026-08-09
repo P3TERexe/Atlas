@@ -1,6 +1,12 @@
 import Foundation
 import FoundationModels
 
+// MARK: - Shared HTTP settings
+
+/// Timeout generoso per le richieste ai provider LLM: i modelli in modalità
+/// reasoning (o sotto carico) possono impiegare oltre i 60s di default di URLSession.
+private let httpRequestTimeout: TimeInterval = 300
+
 // MARK: - Provider Enum
 
 enum AIProvider: String, CaseIterable, Identifiable, Sendable {
@@ -146,6 +152,7 @@ struct OllamaModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
@@ -209,6 +216,7 @@ struct OpenAIModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -267,6 +275,7 @@ struct ClaudeModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("anthropic-version=2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "x-api-key")
@@ -341,6 +350,7 @@ struct NvidiaModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -464,6 +474,7 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -555,11 +566,20 @@ struct OpenCodeModelProvider: ModelProvider {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            // Retry una volta: l'endpoint Zen può essere lento sotto carico
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            (data, response) = try await URLSession.shared.data(for: request)
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PlannerError.llmError("Nessuna risposta da OpenCode AI")
@@ -573,11 +593,17 @@ struct OpenCodeModelProvider: ModelProvider {
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = jsonObject["choices"] as? [[String: Any]],
               let first = choices.first,
-              let message = first["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw PlannerError.invalidResponse
+              let message = first["message"] as? [String: Any] else {
+            let rawBody = String(data: data, encoding: .utf8) ?? ""
+            throw PlannerError.decodingFailed("Formato risposta da OpenCode AI non riconosciuto.\n\nTesto grezzo dal server:\n\(rawBody)")
         }
         
-        return try ActionGraphParser.parse(content)
+        let rawContent = (message["content"] as? String) ?? (message["reasoning_content"] as? String) ?? ""
+        guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let rawBody = String(data: data, encoding: .utf8) ?? ""
+            throw PlannerError.decodingFailed("Il modello ha restituito un testo vuoto.\n\nTesto grezzo dal server:\n\(rawBody)")
+        }
+        
+        return try ActionGraphParser.parse(rawContent)
     }
 }
