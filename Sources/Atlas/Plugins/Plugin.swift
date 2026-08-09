@@ -23,6 +23,10 @@ protocol ActionExecutor: Sendable {
 }
 
 extension ActionExecutor {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        try await execute(step: step, context: context)
+    }
+    
     func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
         try await execute(step: step, context: context, progress: nil)
     }

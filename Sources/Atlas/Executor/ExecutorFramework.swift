@@ -47,6 +47,9 @@ struct ProgressUpdate: Sendable {
 class ExecutorFramework {
     
     func execute(graph: ActionGraph, context: FinderContext, query: String? = nil, progress: @escaping (ProgressUpdate) -> Void = { _ in }) async throws -> AtlasTransaction {
+        // Il callback per-item arriva da contesti off-main (plugin nonisolated):
+        // il bridge garantisce la consegna sul main actor
+        let progressBridge = ProgressBridge(handler: progress)
         // Difensivo: riordina gli step per dipendenze anche se il planner ha saltato il sort
         let graph = try graph.topologicallySorted()
         var transaction = AtlasTransaction(steps: graph.steps)
@@ -97,7 +100,7 @@ class ExecutorFramework {
             let result: ActionResult
             do {
                 result = try await executor.execute(step: step, context: context) { itemIdx, totalItems, detailMsg in
-                    progress(ProgressUpdate(
+                    progressBridge.send(ProgressUpdate(
                         stepIndex: index,
                         totalSteps: graph.steps.count,
                         itemIndex: itemIdx,
@@ -140,5 +143,21 @@ class ExecutorFramework {
         HistoryStore.shared.record(transaction)
         AtlasUndoManager.shared.register(transaction: transaction)
         return transaction
+    }
+}
+
+/// Ponte tra il callback di progress (non-Sendable, legato al main actor)
+/// e la chiusura @Sendable ItemProgressCallback invocata dai plugin.
+private final class ProgressBridge: @unchecked Sendable {
+    private let handler: (ProgressUpdate) -> Void
+    
+    init(handler: @escaping (ProgressUpdate) -> Void) {
+        self.handler = handler
+    }
+    
+    func send(_ update: ProgressUpdate) {
+        Task { @MainActor in
+            handler(update)
+        }
     }
 }

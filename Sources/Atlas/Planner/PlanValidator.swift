@@ -77,9 +77,11 @@ struct PlanValidator {
             if lowerQuery.contains(kw) {
                 let foundMatch = graph.steps.contains { step in
                     if let f = step.format?.lowercased() {
-                        if kw == "jpeg" && (f == "jpg" || f == "jpeg") { return true }
-                        if kw == "jpg" && (f == "jpg" || f == "jpeg") { return true }
-                        return f == kw
+                        let ext = (f as NSString).pathExtension.lowercased()
+                        let effectiveFormat = ext.isEmpty ? f : ext
+                        if kw == "jpeg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
+                        if kw == "jpg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
+                        if effectiveFormat == kw || f.hasSuffix("." + kw) { return true }
                     }
                     if kw == "pdf" && step.tool.hasPrefix("pdf") { return true }
                     if kw == "zip" && step.tool.hasPrefix("file") { return true }
@@ -102,7 +104,7 @@ struct PlanValidator {
         
         // 5. Validate input files availability for target tool
         for step in graph.steps {
-            if step.tool == "image.convert" {
+            if step.tool == "image.convert" || step.tool == "pdf.fromImages" {
                 let hasImages = hasMatchingFiles(in: context, exts: MediaFormats.image, stepInputs: step.inputs)
                 if !hasImages {
                     throw PlanValidationError.noMatchingFiles(tool: step.tool, expectedType: "immagine (png, jpg, webp, heic...)")

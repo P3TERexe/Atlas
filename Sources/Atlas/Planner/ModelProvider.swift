@@ -125,7 +125,7 @@ struct OllamaModelProvider: ModelProvider {
             "format": "json",
             "options": [
                 "temperature": 0.0,
-                "num_predict": 1200
+                "num_predict": 2500
             ]
         ]
         
@@ -184,7 +184,7 @@ struct OpenAIModelProvider: ModelProvider {
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 1200
+            "max_tokens": 2500
         ]
         
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
@@ -237,7 +237,7 @@ struct ClaudeModelProvider: ModelProvider {
         
         let requestBody: [String: Any] = [
             "model": model,
-            "max_tokens": 1200,
+            "max_tokens": 2500,
             "temperature": 0.0,
             "system": "You are a filesystem assistant. Translate the user request into a structured ActionGraph JSON. Use tool IDs from the available tools list. Output ONLY the raw JSON object, no markdown.",
             "messages": [
@@ -313,7 +313,7 @@ struct NvidiaModelProvider: ModelProvider {
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": 1200
+            "max_tokens": 2500
         ]
         
         guard let url = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions") else {
@@ -436,7 +436,7 @@ struct OpenAICompatibleModelProvider: ModelProvider {
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 1200
+            "max_tokens": 2500
         ]
         
         var request = URLRequest(url: url)
@@ -521,7 +521,7 @@ struct OpenCodeModelProvider: ModelProvider {
             "messages": messages,
             "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": 1200
+            "max_tokens": 2500
         ]
         
         var request = URLRequest(url: url)
