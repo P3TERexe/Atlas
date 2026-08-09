@@ -116,7 +116,7 @@ class PromptBuilder {
         4. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
         5. For "comprimi foto/immagini" (compress photos), use ONLY 'file.zip'!
         6. For ANY custom/generic request without a specific tool, use tool 'shell.run' and set 'format' to the zsh command line.
-        7. For multi-step requests (e.g. convert AND make N copies in a new directory), output a sequence of steps with 'dependsOn' or use 'shell.run' with a compound zsh command.
+        7. For multi-step requests (e.g. convert AND make N copies in a new directory), output a sequence of steps with 'dependsOn'. For zsh shell copy loops, use: mkdir -p copie && for i in $(seq 1 N); do cp "input.jpg" "copie/copia_$i.jpg"; done.
         """
     }
 }

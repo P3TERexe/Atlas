@@ -108,6 +108,9 @@ final class GenericShellAction: ActionExecutor {
         
         let cmd = step.format ?? step.inputs.joined(separator: " ")
         
+        // Snapshot directory contents before execution
+        let beforeFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
+        
         let result = try await AsyncProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/bin/zsh"),
             arguments: ["-c", cmd],
@@ -115,13 +118,18 @@ final class GenericShellAction: ActionExecutor {
         )
         
         guard result.isSuccess else {
-            throw ExecutorError.executionFailed("Comando fallito: \(result.stderr)")
+            let errorMsg = result.stderr.isEmpty ? result.stdout : result.stderr
+            throw ExecutorError.executionFailed("Comando shell fallito: \(errorMsg.isEmpty ? "Codice uscita \(result.exitCode)" : errorMsg)")
         }
+        
+        // Snapshot newly created files/directories
+        let afterFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
+        let createdFiles = Array(afterFiles.subtracting(beforeFiles))
         
         return ActionResult(
             success: true,
-            outputFiles: [],
-            message: result.stdout.isEmpty ? "Comando eseguito con successo" : result.stdout
+            outputFiles: createdFiles,
+            message: result.stdout.isEmpty ? "Comando eseguito con successo (\(createdFiles.count) nuovi elementi)" : result.stdout
         )
     }
 }
