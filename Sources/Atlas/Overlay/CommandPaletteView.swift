@@ -21,6 +21,8 @@ struct CommandPaletteView: View {
     @State private var currentTask: Task<Void, Never>? = nil
     @FocusState private var textFieldFocused: Bool
     
+    @ObservedObject private var settings = AppSettings.shared
+    
     // Terminal-style command history — backed by CommandHistoryStore (persistent)
     @ObservedObject private var commandHistoryStore = CommandHistoryStore.shared
     @State private var historyIndex: Int = -1
@@ -82,6 +84,25 @@ struct CommandPaletteView: View {
                 }
                 
 
+                // Quick Thinking/Fast mode toggle button
+                Button(action: {
+                    settings.disableThinking.toggle()
+                }) {
+                    HStack(spacing: 3) {
+                        Image(systemName: settings.disableThinking ? "bolt.fill" : "brain.head.profile")
+                            .font(.system(size: 9))
+                            .foregroundColor(settings.disableThinking ? .orange : .purple)
+                        Text(settings.disableThinking ? "Veloce" : "Pensiero")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(settings.disableThinking ? .orange : .purple)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background((settings.disableThinking ? Color.orange : Color.purple).opacity(0.12))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(.plain)
+                .help(settings.disableThinking ? "Pensiero AI disabilitato (modalità veloce). Clicca per abilitare" : "Pensiero AI abilitato. Clicca per disabilitare")
                 
                 // Model selector
                 Menu {
@@ -89,7 +110,7 @@ struct CommandPaletteView: View {
                         Button(action: {
                             selectedProvider = provider
                             planner.activeProvider = provider
-                            AppSettings.shared.defaultProvider = provider
+                            settings.defaultProvider = provider
                         }) {
                             HStack {
                                 if provider == selectedProvider {
@@ -135,11 +156,11 @@ struct CommandPaletteView: View {
                     }
                     
                     Button(action: {
-                        AppSettings.shared.disableThinking.toggle()
+                        settings.disableThinking.toggle()
                     }) {
                         Label(
-                            AppSettings.shared.disableThinking ? "Pensiero AI: Disabilitato (Veloce)" : "Pensiero AI: Abilitato",
-                            systemImage: AppSettings.shared.disableThinking ? "bolt.fill" : "brain.head.profile"
+                            settings.disableThinking ? "Pensiero AI: Disabilitato (Veloce)" : "Pensiero AI: Abilitato",
+                            systemImage: settings.disableThinking ? "bolt.fill" : "brain.head.profile"
                         )
                     }
                     

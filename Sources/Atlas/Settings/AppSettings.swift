@@ -112,7 +112,7 @@ final class AppSettings: ObservableObject {
     
     // MARK: - Thinking / Reasoning Settings
     
-    @Published var disableThinking: Bool {
+    @Published var disableThinking: Bool = false {
         didSet {
             if disableThinking != oldValue {
                 defaults.set(disableThinking, forKey: "disable_thinking")
