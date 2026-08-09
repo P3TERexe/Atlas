@@ -296,7 +296,9 @@ final class SelectFilesAction: ActionExecutor {
         }
         
         // Select & highlight files in Finder
-        NSWorkspace.shared.activateFileViewerSelecting(targetFiles)
+        await MainActor.run {
+            NSWorkspace.shared.activateFileViewerSelecting(targetFiles)
+        }
         
         return ActionResult(
             success: true,

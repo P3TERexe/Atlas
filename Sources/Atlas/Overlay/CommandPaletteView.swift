@@ -750,12 +750,19 @@ struct OutputFileRow: View {
         }
         .task {
             guard fileSize.isEmpty else { return }
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let path = url.path
+            let sizeStr: String
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                let size = attrs[.size] as? Int64 {
-                fileSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+                sizeStr = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+            } else {
+                sizeStr = ""
             }
-            if fileIcon == nil {
-                fileIcon = NSWorkspace.shared.icon(forFile: url.path)
+            await MainActor.run {
+                self.fileSize = sizeStr
+                if self.fileIcon == nil {
+                    self.fileIcon = NSWorkspace.shared.icon(forFile: path)
+                }
             }
         }
         .help("Doppio click per aprire")
