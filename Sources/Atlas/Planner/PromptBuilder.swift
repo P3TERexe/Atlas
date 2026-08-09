@@ -70,6 +70,8 @@ class PromptBuilder {
         4. If the user request is to SELECT or HIGHLIGHT files (e.g. "seleziona le immagini"), use ONLY 'file.select'. DO NOT convert, rename, or modify the files!
         5. If the user asks to COMPRESS photos or images (e.g. "comprimi foto", "comprimi le immagini"), use ONLY 'file.zip' to create a ZIP archive. DO NOT perform lossy image conversions or resizing unless explicitly asked for quality reduction or format change!
         6. FOR ANY CUSTOM REQUEST that does not fit a dedicated tool (e.g. creating directories, searching text, downloading via curl, counting lines/words, running custom scripts), use tool 'shell.run' and put the exact zsh command line in 'format'.
+        7. If the user asks to make N copies of files ("7 copie", "10 volte", "N copies") into a folder, use ONLY tool 'file.copy' with 'format' set to the copy count (e.g. "7" for folder 'copie', or "7;backup" for folder 'backup'). NEVER use shell.run loops (for/seq/cp) to create copies!
+        8. For multi-step requests (e.g. convert AND make N copies), output a sequence of steps and reference the first step's outputs in the second step's 'inputs', with 'dependsOn' on the first step's id.
         """
         
         return prompt
@@ -111,12 +113,13 @@ class PromptBuilder {
         
         RULES:
         1. If files are selected, include ALL selected filenames in 'inputs'.
-        2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.). Automatically fix typos in format (e.g. 'jepeg' -> 'jpg').
+        2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.).
         3. Set 'grayscale': true for Black & White.
         4. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
         5. For "comprimi foto/immagini" (compress photos), use ONLY 'file.zip'!
         6. For ANY custom/generic request without a specific tool, use tool 'shell.run' and set 'format' to the zsh command line.
-        7. For multi-step requests (e.g. convert AND make N copies in a new directory), output a sequence of steps with 'dependsOn'. For zsh shell copy loops, use: mkdir -p copie && for i in $(seq 1 N); do cp "input.jpg" "copie/copia_$i.jpg"; done.
+        7. For multi-step requests (e.g. convert AND make N copies in a new folder), output a sequence of steps with 'dependsOn'.
+        8. For "N copie in una cartella" (N copies of files in a folder), use tool 'file.copy' with 'format' = copy count, e.g. "7" (folder 'copie') or "7;backup" (folder 'backup'). NEVER use shell loops for copies!
         """
     }
 }

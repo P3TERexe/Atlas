@@ -43,6 +43,13 @@ class FilePlugin: AtlasPlugin {
                 outputFormats: [],
                 executor: TrashFilesAction()
             ),
+            ToolCapability(
+                id: "file.copy",
+                description: "Creates N identical copies of the given file(s) inside a destination folder (default 'copie'). Set 'format' to the copy count (e.g. '7') or 'N;folderName' (e.g. '7;backup') to choose the folder.",
+                inputFormats: [],
+                outputFormats: [],
+                executor: CopyFilesAction()
+            ),
         ]
     }
 }
@@ -333,10 +340,79 @@ final class SelectFilesAction: ActionExecutor {
     }
 }
 
+// MARK: - Copy Files Action (N copies into a folder)
+
+final class CopyFilesAction: ActionExecutor {
+    private static let maxCopies = 100
+    
+    func validate(step: ActionStep, context: FinderContext) throws {
+        let files = FileResolver.resolveInputURLs(step: step, context: context)
+        guard !files.isEmpty else {
+            throw ExecutorError.validationFailed("Nessun file trovato da copiare.")
+        }
+        guard let count = Self.parseCopyCount(from: step.format), count > 0, count <= Self.maxCopies else {
+            throw ExecutorError.validationFailed("Specifica il numero di copie nel campo 'format' (es. '7' o '7;backup').")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = FileResolver.resolveInputURLs(step: step, context: context)
+        guard let currentDirectory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        guard let copyCount = Self.parseCopyCount(from: step.format), copyCount > 0, copyCount <= Self.maxCopies else {
+            throw ExecutorError.executionFailed("Numero di copie non valido nel campo 'format'.")
+        }
+        guard !files.isEmpty else {
+            return ActionResult(success: true, outputFiles: [], message: "Nessun file da copiare.")
+        }
+        
+        let folderName = Self.folderName(from: step.format) ?? "copie"
+        let targetFolder = currentDirectory.appendingPathComponent(folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        
+        var created: [URL] = []
+        let totalCopies = files.count * copyCount
+        var completed = 0
+        
+        for file in files {
+            let base = file.deletingPathExtension().lastPathComponent
+            let ext = file.pathExtension
+            for copyIndex in 1...copyCount {
+                completed += 1
+                progress?(completed, totalCopies, "Copia \(copyIndex)/\(copyCount) di \(file.lastPathComponent)")
+                let targetURL = FileResolver.uniqueURL(in: targetFolder, baseName: "\(base)_copia_\(copyIndex)", extensionName: ext)
+                try FileManager.default.copyItem(at: file, to: targetURL)
+                created.append(targetURL)
+            }
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: created,
+            message: "Create \(created.count) copie di \(files.count) file nella cartella '\(folderName)'"
+        )
+    }
+    
+    private static func parseCopyCount(from format: String?) -> Int? {
+        guard let format else { return nil }
+        let first = format.split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return first.flatMap { Int($0) }
+    }
+    
+    private static func folderName(from format: String?) -> String? {
+        guard let format else { return nil }
+        let parts = format.split(separator: ";", maxSplits: 1)
+        guard parts.count > 1 else { return nil }
+        let name = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+}
+
 // MARK: - Safe Trash Files Action
 
-final class TrashFilesAction: ActionExecutor {
-    func validate(step: ActionStep, context: FinderContext) throws {
+final class TrashFilesAction: ActionExecutor {    func validate(step: ActionStep, context: FinderContext) throws {
         try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
     }
     

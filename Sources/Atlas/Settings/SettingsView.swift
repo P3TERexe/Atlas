@@ -1,13 +1,117 @@
 import SwiftUI
 
+// MARK: - Reusable Provider Section (Collapsible)
+
+struct ProviderSection<Content: View>: View {
+    let name: String
+    let icon: String
+    let isConfigured: Bool
+    @ViewBuilder let content: () -> Content
+    
+    @State private var isExpanded: Bool = false
+    
+    var body: some View {
+        Section {
+            // Header — click to expand/collapse
+            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .foregroundColor(.accentColor)
+                        .font(.system(size: 16))
+                    
+                    Text(name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.primary)
+                    
+                    Spacer()
+                    
+                    if isConfigured {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.caption)
+                    } else {
+                        Image(systemName: "circle.dashed")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                    
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            
+            if isExpanded {
+                content()
+            }
+        }
+    }
+}
+
+// MARK: - API Key Field
+
+struct APIKeyField: View {
+    let placeholder: String
+    @Binding var key: String
+    @State private var showKey: Bool = false
+    
+    var body: some View {
+        HStack {
+            if showKey {
+                TextField(placeholder, text: $key)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                SecureField(placeholder, text: $key)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+            Button(action: { showKey.toggle() }) {
+                Image(systemName: showKey ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+// MARK: - Test/Remove Row
+
+struct APIActionRow: View {
+    let hasKey: Bool
+    let isTesting: Bool
+    let testResult: String?
+    let onTest: () -> Void
+    let onRemove: () -> Void
+    
+    var body: some View {
+        HStack {
+            if hasKey {
+                Label("Keychain ✓", systemImage: "lock.shield.fill")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            }
+            
+            Spacer()
+            
+            Button("Test") { onTest() }
+                .disabled(isTesting || !hasKey)
+            
+            Button("Rimuovi") { onRemove() }
+                .disabled(!hasKey)
+        }
+        
+        if let result = testResult {
+            Text(result)
+                .font(.caption)
+                .foregroundColor(result.hasPrefix("✓") ? .green : .red)
+        }
+    }
+}
+
+// MARK: - Settings View
+
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
-    
-    @State private var showOpenAIKey: Bool = false
-    @State private var showClaudeKey: Bool = false
-    @State private var showNvidiaKey: Bool = false
-    @State private var showOpenCodeKey: Bool = false
-    @State private var showCustomKey: Bool = false
     
     @State private var testingOllama: Bool = false
     @State private var ollamaTestResult: String? = nil
@@ -31,22 +135,13 @@ struct SettingsView: View {
         TabView {
             // MARK: - Tab Provider AI
             Form {
-                // MARK: Stile Finestra Palette
-                Section("Stile Finestra Palette") {
-                    Picker("Tipo di Finestra Prompt", selection: $settings.useStandardWindow) {
-                        Label("Overlay Fluttuante HUD (Default)", systemImage: "sparkles")
-                            .tag(false)
-                        Label("Finestra Standard macOS (\"Finestra Vera\")", systemImage: "macwindow")
-                            .tag(true)
+                // MARK: Window Style — compact toggle
+                Section("Finestra") {
+                    Picker("Tipo", selection: $settings.useStandardWindow) {
+                        Text("Overlay HUD").tag(false)
+                        Text("Finestra Standard").tag(true)
                     }
                     .pickerStyle(.radioGroup)
-                    
-                    Text(settings.useStandardWindow ?
-                        "✓ Modalità Finestra Vera attiva: la palette appare come una normale finestra macOS con barra del titolo, pulsanti di ridimensionamento e chiusura. Non si chiude automaticamente quando clicchi all'esterno." :
-                        "✓ Modalità Overlay HUD attiva: la palette appare come una barra fluttuante trasparente e si chiude automaticamente al click esterno."
-                    )
-                    .font(.caption)
-                    .foregroundColor(.secondary)
                 }
                 
                 Section("Provider Predefinito") {
@@ -60,81 +155,52 @@ struct SettingsView: View {
                 }
                 
                 // MARK: Apple Intelligence
-                Section("Apple Intelligence (On-Device)") {
-                    HStack {
-                        Image(systemName: "brain.head.profile")
-                            .foregroundColor(.accentColor)
-                            .font(.title2)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Apple Foundation Models")
-                                .font(.headline)
-                            Text("Modello integrato nel sistema. Massimo rispetto della privacy, zero configurazione.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
+                ProviderSection(
+                    name: "Apple Intelligence",
+                    icon: "brain.head.profile",
+                    isConfigured: true
+                ) {
+                    Text("On-device, zero configurazione")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 
-                // MARK: OpenCode AI (Zen)
-                Section("OpenCode AI (Zen)") {
-                    HStack {
-                        Image(systemName: "chevron.left.forwardslash.chevron.right")
-                            .foregroundColor(.accentColor)
-                            .font(.title2)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("OpenCode AI (Zen Inference API)")
-                                .font(.headline)
-                            Text("Ottieni l'API Key gratuita o pro su opencode.ai/auth.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    
-                    HStack {
-                        if showOpenCodeKey {
-                            TextField("API Key (opencode.ai/auth)", text: $settings.openCodeApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key (opencode.ai/auth)", text: $settings.openCodeApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        Button(action: { showOpenCodeKey.toggle() }) {
-                            Image(systemName: showOpenCodeKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                // MARK: OpenCode AI
+                ProviderSection(
+                    name: "OpenCode AI (Zen)",
+                    icon: "chevron.left.forwardslash.chevron.right",
+                    isConfigured: !settings.openCodeApiKey.isEmpty
+                ) {
+                    APIKeyField(placeholder: "API Key", key: $settings.openCodeApiKey)
                     
                     HStack {
                         TextField("Modello", text: $settings.openCodeModel)
                             .textFieldStyle(.roundedBorder)
                         
                         Menu {
-                            Button("deepseek-v4-flash-free (Gratuito)") {
+                            Button("deepseek-v4-flash-free") {
                                 settings.openCodeModel = "deepseek-v4-flash-free"
                             }
-                            Button("big-pickle (Gratuito)") {
+                            Button("big-pickle") {
                                 settings.openCodeModel = "big-pickle"
                             }
-                            Button("mimo-v2.5-free (Gratuito)") {
+                            Button("mimo-v2.5-free") {
                                 settings.openCodeModel = "mimo-v2.5-free"
                             }
-                            Button("minimax-m3-free (Gratuito)") {
+                            Button("minimax-m3-free") {
                                 settings.openCodeModel = "minimax-m3-free"
                             }
-                            Button("nemotron-3-ultra-free (Gratuito)") {
+                            Button("nemotron-3-ultra-free") {
                                 settings.openCodeModel = "nemotron-3-ultra-free"
                             }
                             Divider()
-                            Button("deepseek-v4-pro (Pro)") {
+                            Button("deepseek-v4-pro") {
                                 settings.openCodeModel = "deepseek-v4-pro"
                             }
-                            Button("gpt-5.6-sol (Pro)") {
+                            Button("gpt-5.6-sol") {
                                 settings.openCodeModel = "gpt-5.6-sol"
                             }
-                            Button("kimi-k2.6 (Pro)") {
+                            Button("kimi-k2.6") {
                                 settings.openCodeModel = "kimi-k2.6"
                             }
                         } label: {
@@ -142,56 +208,24 @@ struct SettingsView: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Seleziona un modello OpenCode Zen")
                     }
                     
-                    HStack {
-                        if !settings.openCodeApiKey.isEmpty {
-                            Label("Salvata nel Keychain", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Label("Chiave assente (opencode.ai/auth)", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Button("Test API") {
-                            testOpenCodeConnection()
-                        }
-                        .disabled(testingOpenCode || settings.openCodeApiKey.isEmpty)
-                        
-                        Button("Rimuovi") {
-                            settings.removeOpenCodeKey()
-                        }
-                        .disabled(settings.openCodeApiKey.isEmpty)
-                    }
-                    
-                    if let result = openCodeTestResult {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundColor(result.hasPrefix("✓") ? .green : .red)
-                    }
+                    APIActionRow(
+                        hasKey: !settings.openCodeApiKey.isEmpty,
+                        isTesting: testingOpenCode,
+                        testResult: openCodeTestResult,
+                        onTest: testOpenCodeConnection,
+                        onRemove: { settings.removeOpenCodeKey() }
+                    )
                 }
                 
                 // MARK: NVIDIA Build
-                Section("NVIDIA Build") {
-                    HStack {
-                        if showNvidiaKey {
-                            TextField("API Key (nvapi-...)", text: $settings.nvidiaApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key (nvapi-...)", text: $settings.nvidiaApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        Button(action: { showNvidiaKey.toggle() }) {
-                            Image(systemName: showNvidiaKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                ProviderSection(
+                    name: "NVIDIA Build",
+                    icon: "cpu",
+                    isConfigured: !settings.nvidiaApiKey.isEmpty
+                ) {
+                    APIKeyField(placeholder: "API Key (nvapi-...)", key: $settings.nvidiaApiKey)
                     
                     HStack {
                         TextField("Modello", text: $settings.nvidiaModel)
@@ -215,156 +249,70 @@ struct SettingsView: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Seleziona un modello NVIDIA attivo")
                     }
                     
-                    HStack {
-                        if !settings.nvidiaApiKey.isEmpty {
-                            Label("Salvata nel Keychain", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Label("Chiave assente", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Button("Test API") {
-                            testNvidiaConnection()
-                        }
-                        .disabled(testingNvidia || settings.nvidiaApiKey.isEmpty)
-                        
-                        Button("Rimuovi") {
-                            settings.removeNvidiaKey()
-                        }
-                        .disabled(settings.nvidiaApiKey.isEmpty)
-                    }
-                    
-                    if let result = nvidiaTestResult {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundColor(result.hasPrefix("✓") ? .green : .red)
-                    }
+                    APIActionRow(
+                        hasKey: !settings.nvidiaApiKey.isEmpty,
+                        isTesting: testingNvidia,
+                        testResult: nvidiaTestResult,
+                        onTest: testNvidiaConnection,
+                        onRemove: { settings.removeNvidiaKey() }
+                    )
                 }
                 
                 // MARK: OpenAI
-                Section("OpenAI") {
-                    HStack {
-                        if showOpenAIKey {
-                            TextField("API Key (sk-...)", text: $settings.openAIApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key (sk-...)", text: $settings.openAIApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        Button(action: { showOpenAIKey.toggle() }) {
-                            Image(systemName: showOpenAIKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                ProviderSection(
+                    name: "OpenAI",
+                    icon: "circle.hexagongrid",
+                    isConfigured: !settings.openAIApiKey.isEmpty
+                ) {
+                    APIKeyField(placeholder: "API Key (sk-...)", key: $settings.openAIApiKey)
                     
-                    HStack {
-                        if !settings.openAIApiKey.isEmpty {
-                            Label("Salvata nel Keychain", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Label("Chiave assente", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Button("Test API") {
-                            testOpenAIConnection()
-                        }
-                        .disabled(testingOpenAI || settings.openAIApiKey.isEmpty)
-                        
-                        Button("Rimuovi") {
-                            settings.removeOpenAIKey()
-                        }
-                        .disabled(settings.openAIApiKey.isEmpty)
-                    }
-                    
-                    if let result = openAITestResult {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundColor(result.hasPrefix("✓") ? .green : .red)
-                    }
+                    APIActionRow(
+                        hasKey: !settings.openAIApiKey.isEmpty,
+                        isTesting: testingOpenAI,
+                        testResult: openAITestResult,
+                        onTest: testOpenAIConnection,
+                        onRemove: { settings.removeOpenAIKey() }
+                    )
                 }
                 
-                // MARK: Claude (Anthropic)
-                Section("Claude (Anthropic)") {
-                    HStack {
-                        if showClaudeKey {
-                            TextField("API Key (sk-ant-...)", text: $settings.claudeApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key (sk-ant-...)", text: $settings.claudeApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        Button(action: { showClaudeKey.toggle() }) {
-                            Image(systemName: showClaudeKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                // MARK: Claude
+                ProviderSection(
+                    name: "Claude (Anthropic)",
+                    icon: "bubble.left.and.text.bubble.right",
+                    isConfigured: !settings.claudeApiKey.isEmpty
+                ) {
+                    APIKeyField(placeholder: "API Key (sk-ant-...)", key: $settings.claudeApiKey)
                     
-                    HStack {
-                        if !settings.claudeApiKey.isEmpty {
-                            Label("Salvata nel Keychain", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Label("Chiave assente", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Button("Test API") {
-                            testClaudeConnection()
-                        }
-                        .disabled(testingClaude || settings.claudeApiKey.isEmpty)
-                        
-                        Button("Rimuovi") {
-                            settings.removeClaudeKey()
-                        }
-                        .disabled(settings.claudeApiKey.isEmpty)
-                    }
-                    
-                    if let result = claudeTestResult {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundColor(result.hasPrefix("✓") ? .green : .red)
-                    }
+                    APIActionRow(
+                        hasKey: !settings.claudeApiKey.isEmpty,
+                        isTesting: testingClaude,
+                        testResult: claudeTestResult,
+                        onTest: testClaudeConnection,
+                        onRemove: { settings.removeClaudeKey() }
+                    )
                 }
                 
-                // MARK: Ollama (Locale)
-                Section("Ollama (Locale)") {
-                    TextField("Endpoint REST", text: $settings.ollamaEndpoint)
+                // MARK: Ollama
+                ProviderSection(
+                    name: "Ollama (Locale)",
+                    icon: "desktopcomputer",
+                    isConfigured: !settings.ollamaEndpoint.isEmpty
+                ) {
+                    TextField("Endpoint", text: $settings.ollamaEndpoint)
                         .textFieldStyle(.roundedBorder)
                     
-                    TextField("Nome Modello", text: $settings.ollamaModel)
+                    TextField("Modello", text: $settings.ollamaModel)
                         .textFieldStyle(.roundedBorder)
                     
                     HStack {
-                        Text("Es. endpoint: http://localhost:11434/api/generate")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
                         Spacer()
-                        
                         Button(action: testOllamaConnection) {
                             if testingOllama {
                                 ProgressView().scaleEffect(0.6)
                             } else {
-                                Text("Test Connessione")
+                                Text("Test")
                             }
                         }
                         .disabled(testingOllama || settings.ollamaEndpoint.isEmpty)
@@ -377,24 +325,14 @@ struct SettingsView: View {
                     }
                 }
                 
-                // MARK: Custom OpenAI-Compatible
-                Section("Custom (OpenAI-Compatible)") {
+                // MARK: Custom
+                ProviderSection(
+                    name: "Custom (OpenAI-Compatible)",
+                    icon: "puzzlepiece.extension",
+                    isConfigured: !settings.customBaseURL.isEmpty
+                ) {
                     HStack {
-                        Image(systemName: "puzzlepiece.extension")
-                            .foregroundColor(.accentColor)
-                            .font(.title2)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Provider Custom OpenAI-Compatible")
-                                .font(.headline)
-                            Text("Qualsiasi server con API /chat/completions: OpenCode, GLM-5.2, LM Studio, vLLM, ecc.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    
-                    HStack {
-                        TextField("Base URL (es. https://api.z.ai/api/paas/v4)", text: $settings.customBaseURL)
+                        TextField("Base URL", text: $settings.customBaseURL)
                             .textFieldStyle(.roundedBorder)
                         
                         Menu {
@@ -445,40 +383,17 @@ struct SettingsView: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Seleziona preset provider")
                     }
                     
-                    TextField("Modello (es. glm-5.2)", text: $settings.customModel)
+                    TextField("Modello", text: $settings.customModel)
                         .textFieldStyle(.roundedBorder)
                     
-                    HStack {
-                        if showCustomKey {
-                            TextField("API Key (opzionale)", text: $settings.customApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key (opzionale)", text: $settings.customApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        Button(action: { showCustomKey.toggle() }) {
-                            Image(systemName: showCustomKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    APIKeyField(placeholder: "API Key (opzionale)", key: $settings.customApiKey)
                     
                     HStack {
-                        if !settings.customApiKey.isEmpty {
-                            Label("API Key salvata nel Keychain", systemImage: "lock.shield.fill")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Label("API Key assente (opzionale per server locali)", systemImage: "info.circle")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        
                         Spacer()
                         
-                        Button("Test API") {
+                        Button("Test") {
                             testCustomConnection()
                         }
                         .disabled(testingCustom || settings.customBaseURL.isEmpty)
@@ -519,9 +434,9 @@ struct SettingsView: View {
                     .padding(.horizontal)
                 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("• Scorciatoia di attivazione: ⌥ Space (solo con Finder attivo)")
-                    Text("• Annullamento azioni: ⌘⇧Z")
-                    Text("• Le API key sono archiviate in sicurezza nel Keychain di macOS.")
+                    Text("• ⌥ Space per attivare (con Finder attivo)")
+                    Text("• ⌘⇧Z per annullare")
+                    Text("• API key salvate nel Keychain")
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -533,7 +448,7 @@ struct SettingsView: View {
                 Label("Informazioni", systemImage: "info.circle")
             }
         }
-        .frame(width: 560, height: 560)
+        .frame(width: 520, height: 500)
         .alert("Errore Keychain", isPresented: Binding(
             get: { settings.keychainError != nil },
             set: { if !$0 { settings.keychainError = nil } }
@@ -565,18 +480,18 @@ struct SettingsView: View {
                     if let http = response as? HTTPURLResponse {
                         switch http.statusCode {
                         case 200:
-                            self.openCodeTestResult = "✓ API Key OpenCode valida e server connesso!"
+                            self.openCodeTestResult = "✓ API Key valida!"
                         case 401, 403:
-                            self.openCodeTestResult = "❌ API Key OpenCode non valida (\(http.statusCode)). Generane una nuova su opencode.ai/auth."
+                            self.openCodeTestResult = "❌ API Key non valida (\(http.statusCode))"
                         default:
-                            self.openCodeTestResult = "✓ Connessione a OpenCode stabilita (HTTP \(http.statusCode))."
+                            self.openCodeTestResult = "✓ Connesso (HTTP \(http.statusCode))"
                         }
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingOpenCode = false
-                    self.openCodeTestResult = "❌ Connessione a OpenCode fallita: \(error.localizedDescription)"
+                    self.openCodeTestResult = "❌ Connessione fallita: \(error.localizedDescription)"
                 }
             }
         }
@@ -597,17 +512,17 @@ struct SettingsView: View {
                 await MainActor.run {
                     self.testingOpenAI = false
                     if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                        self.openAITestResult = "✓ API Key OpenAI valida!"
+                        self.openAITestResult = "✓ API Key valida!"
                     } else if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                        self.openAITestResult = "❌ API Key OpenAI non valida (401 Unauthorized)."
+                        self.openAITestResult = "❌ API Key non valida (401)"
                     } else {
-                        self.openAITestResult = "❌ Risposta non valida da OpenAI."
+                        self.openAITestResult = "❌ Risposta non valida"
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingOpenAI = false
-                    self.openAITestResult = "❌ Connessione a OpenAI fallita: \(error.localizedDescription)"
+                    self.openAITestResult = "❌ Connessione fallita: \(error.localizedDescription)"
                 }
             }
         }
@@ -632,16 +547,16 @@ struct SettingsView: View {
                     self.testingClaude = false
                     if let http = response as? HTTPURLResponse {
                         if http.statusCode == 401 || http.statusCode == 403 {
-                            self.claudeTestResult = "❌ API Key Claude non valida (\(http.statusCode))."
+                            self.claudeTestResult = "❌ API Key non valida (\(http.statusCode))"
                         } else {
-                            self.claudeTestResult = "✓ API Key Claude valida!"
+                            self.claudeTestResult = "✓ API Key valida!"
                         }
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingClaude = false
-                    self.claudeTestResult = "❌ Connessione ad Anthropic fallita: \(error.localizedDescription)"
+                    self.claudeTestResult = "❌ Connessione fallita: \(error.localizedDescription)"
                 }
             }
         }
@@ -662,17 +577,17 @@ struct SettingsView: View {
                 await MainActor.run {
                     self.testingNvidia = false
                     if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                        self.nvidiaTestResult = "✓ API Key NVIDIA Build valida!"
+                        self.nvidiaTestResult = "✓ API Key valida!"
                     } else if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                        self.nvidiaTestResult = "❌ API Key NVIDIA Build non valida (401 Unauthorized)."
+                        self.nvidiaTestResult = "❌ API Key non valida (401)"
                     } else {
-                        self.nvidiaTestResult = "✓ API Key NVIDIA accettata."
+                        self.nvidiaTestResult = "✓ Accettata"
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingNvidia = false
-                    self.nvidiaTestResult = "❌ Connessione a NVIDIA Build fallita: \(error.localizedDescription)"
+                    self.nvidiaTestResult = "❌ Connessione fallita: \(error.localizedDescription)"
                 }
             }
         }
@@ -684,7 +599,7 @@ struct SettingsView: View {
         
         guard let url = URL(string: settings.ollamaEndpoint) else {
             testingOllama = false
-            ollamaTestResult = "❌ URL endpoint non valido."
+            ollamaTestResult = "❌ URL non valido"
             return
         }
         
@@ -698,15 +613,15 @@ struct SettingsView: View {
                 await MainActor.run {
                     self.testingOllama = false
                     if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                        self.ollamaTestResult = "✓ Server Ollama raggiungibile!"
+                        self.ollamaTestResult = "✓ Raggiungibile!"
                     } else {
-                        self.ollamaTestResult = "✓ Risposta ricevuta da Ollama."
+                        self.ollamaTestResult = "✓ Risposta ricevuta"
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingOllama = false
-                    self.ollamaTestResult = "❌ Impossibile connettersi a Ollama: \(error.localizedDescription)"
+                    self.ollamaTestResult = "❌ Non raggiungibile: \(error.localizedDescription)"
                 }
             }
         }
@@ -722,7 +637,7 @@ struct SettingsView: View {
         
         guard let url = URL(string: urlString) else {
             testingCustom = false
-            customTestResult = "❌ Base URL non valido."
+            customTestResult = "❌ URL non valido"
             return
         }
         
@@ -740,21 +655,21 @@ struct SettingsView: View {
                     if let http = response as? HTTPURLResponse {
                         switch http.statusCode {
                         case 200:
-                            self.customTestResult = "✓ Provider raggiungibile e API Key valida!"
+                            self.customTestResult = "✓ Raggiungibile, API Key valida!"
                         case 401, 403:
-                            self.customTestResult = "❌ API Key non valida o accesso negato (\(http.statusCode))."
+                            self.customTestResult = "❌ Accesso negato (\(http.statusCode))"
                         case 404:
                             // Some custom servers don't expose /models — treat as reachable
-                            self.customTestResult = "✓ Server raggiungibile (endpoint /models non esposto)."
+                            self.customTestResult = "✓ Raggiungibile"
                         default:
-                            self.customTestResult = "⚠︎ Risposta HTTP \(http.statusCode) dal provider."
+                            self.customTestResult = "⚠︎ HTTP \(http.statusCode)"
                         }
                     }
                 }
             } catch {
                 await MainActor.run {
                     self.testingCustom = false
-                    self.customTestResult = "❌ Impossibile connettersi al provider: \(error.localizedDescription)"
+                    self.customTestResult = "❌ Non raggiungibile: \(error.localizedDescription)"
                 }
             }
         }

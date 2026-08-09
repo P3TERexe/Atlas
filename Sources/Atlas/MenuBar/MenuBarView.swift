@@ -30,12 +30,11 @@ struct MenuBarView: View {
             
             Divider()
             
-            // Actions
+            // Actions — compact, no subtitles
             VStack(spacing: 2) {
                 MenuBarButton(
                     icon: "keyboard",
                     title: "Attiva Palette",
-                    subtitle: "⌥ Space (con Finder aperto)",
                     color: .accentColor
                 ) {
                     if let delegate = NSApp.delegate as? AppDelegate {
@@ -48,37 +47,27 @@ struct MenuBarView: View {
                         ZStack {
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Color.secondary.opacity(0.15))
-                                .frame(width: 28, height: 28)
+                                .frame(width: 26, height: 26)
                             Image(systemName: "gear")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(.secondary)
                         }
                         
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Impostazioni")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.primary)
-                            Text("Provider AI, API keys")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                        }
+                        Text("Impostazioni")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.primary)
                         
                         Spacer()
-                        
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
                     }
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 4)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 
                 MenuBarButton(
                     icon: "arrow.counterclockwise",
-                    title: "Riavvia Atlas",
-                    subtitle: "Ricarica l'applicazione",
+                    title: "Riavvia",
                     color: .orange
                 ) {
                     restartApp()
@@ -86,8 +75,7 @@ struct MenuBarView: View {
                 
                 MenuBarButton(
                     icon: "xmark.circle",
-                    title: "Esci da Atlas",
-                    subtitle: "Chiudi l'applicazione",
+                    title: "Esci",
                     color: .red
                 ) {
                     NSApplication.shared.terminate(nil)
@@ -98,9 +86,9 @@ struct MenuBarView: View {
             
             Divider()
             
-            // Footer
+            // Footer — version instead of tagline
             HStack {
-                Text("Atlas — Natural Language Filesystem")
+                Text("Atlas v1.0")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -108,7 +96,7 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
         }
-        .frame(width: 260)
+        .frame(width: 240)
         .background(.regularMaterial)
     }
     
@@ -129,7 +117,6 @@ struct MenuBarView: View {
 struct MenuBarButton: View {
     let icon: String
     let title: String
-    let subtitle: String
     let color: Color
     let action: () -> Void
     
@@ -141,30 +128,20 @@ struct MenuBarButton: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(color.opacity(0.15))
-                        .frame(width: 28, height: 28)
+                        .frame(width: 26, height: 26)
                     Image(systemName: icon)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundColor(color)
                 }
                 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.primary)
-                    Text(subtitle)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
                 
                 Spacer()
-                
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .opacity(isHovered ? 1 : 0)
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 5)
+            .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 7)
                     .fill(isHovered ? Color.primary.opacity(0.07) : Color.clear)

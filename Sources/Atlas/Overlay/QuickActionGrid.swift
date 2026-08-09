@@ -26,10 +26,10 @@ struct QuickActionGrid: View {
                 ActionPill(icon: "photo", label: "JPG", command: "jpg", tint: .blue),
                 ActionPill(icon: "photo.fill", label: "PNG", command: "png", tint: .blue),
                 ActionPill(icon: "globe", label: "WebP", command: "webp", tint: .blue),
-                ActionPill(icon: "arrow.up.left.and.arrow.down.right", label: "Resize 1024px", command: "ridimensiona immagini a 1024px", tint: .blue),
+                ActionPill(icon: "arrow.up.left.and.arrow.down.right", label: "Resize", command: "ridimensiona immagini a 1024px", tint: .blue),
                 ActionPill(icon: "circle.righthalf.filled", label: "B&W", command: "bw", tint: .blue),
-                ActionPill(icon: "xmark.shield", label: "Pulisci EXIF", command: "rimuovi metadati EXIF immagini", tint: .blue),
-                ActionPill(icon: "text.viewfinder", label: "OCR Rename", command: "ocr", tint: .blue)
+                ActionPill(icon: "xmark.shield", label: "EXIF ✕", command: "rimuovi metadati EXIF immagini", tint: .blue),
+                ActionPill(icon: "text.viewfinder", label: "OCR", command: "ocr", tint: .blue)
             ]
         ),
         QuickActionCategory(
@@ -41,13 +41,13 @@ struct QuickActionGrid: View {
             ]
         ),
         QuickActionCategory(
-            title: "Documenti PDF",
+            title: "PDF",
             icon: "doc.text",
             pills: [
-                ActionPill(icon: "doc.on.doc", label: "Unisci PDF", command: "unisci pdf", tint: .red),
-                ActionPill(icon: "doc.richtext", label: "Immagini → PDF", command: "immagini in unico pdf", tint: .red),
-                ActionPill(icon: "arrow.down.right.and.arrow.up.left", label: "Comprimi PDF", command: "comprimi pdf", tint: .red),
-                ActionPill(icon: "scissors", label: "Split Pagine", command: "dividi pagine pdf", tint: .red)
+                ActionPill(icon: "doc.on.doc", label: "Unisci", command: "unisci pdf", tint: .red),
+                ActionPill(icon: "doc.richtext", label: "IMG → PDF", command: "immagini in unico pdf", tint: .red),
+                ActionPill(icon: "arrow.down.right.and.arrow.up.left", label: "Comprimi", command: "comprimi pdf", tint: .red),
+                ActionPill(icon: "scissors", label: "Split", command: "dividi pagine pdf", tint: .red)
             ]
         ),
         QuickActionCategory(
@@ -56,30 +56,19 @@ struct QuickActionGrid: View {
             pills: [
                 ActionPill(icon: "doc.zipper", label: "ZIP", command: "zip", tint: .green),
                 ActionPill(icon: "pencil.and.outline", label: "Rinomina", command: "rinomina file", tint: .green),
-                ActionPill(icon: "cursorarrow.click.2", label: "Seleziona", command: "seleziona file", tint: .green)
-            ]
-        ),
-        QuickActionCategory(
-            title: "Calcoli & Utility",
-            icon: "function",
-            pills: [
-                ActionPill(icon: "plusminus.circle", label: "Calcola 15% di 85.99", command: "15% of 85.99", tint: .orange),
-                ActionPill(icon: "terminal", label: "Esegui Shell", command: "shell", tint: .orange)
+                ActionPill(icon: "cursorarrow.click.2", label: "Seleziona", command: "seleziona file", tint: .green),
+                ActionPill(icon: "plusminus.circle", label: "Calcola", command: "15% of 85.99", tint: .orange),
+                ActionPill(icon: "terminal", label: "Shell", command: "shell", tint: .orange)
             ]
         )
     ]
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Azioni Rapide & Formati Supportati")
-                .font(.caption.weight(.bold))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 2)
-            
+        VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(categories) { cat in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 4) {
                                 Image(systemName: cat.icon)
                                     .font(.caption2)

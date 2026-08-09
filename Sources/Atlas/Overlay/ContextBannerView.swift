@@ -28,24 +28,22 @@ struct ContextBannerView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "folder.fill")
-                    .foregroundColor(.accentColor)
-                    .font(.system(size: 12))
-                
-                Text(folderName)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
-                
-                Text("·")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11))
-                
-                if selectedFilesCount > 0 {
-                    Text("\(selectedFilesCount) file \(selectedFilesCount == 1 ? "selezionato" : "selezionati")")
-                        .font(.system(size: 11, weight: .medium))
+        // Hide banner entirely when no files are selected
+        if selectedFilesCount > 0 {
+            VStack(alignment: .leading, spacing: 6) {
+                // Compact summary row — tap to expand/collapse
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.accentColor)
+                        .font(.system(size: 12))
+                    
+                    Text(folderName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.primary)
+                    
+                    Text("·")
                         .foregroundColor(.secondary)
+                        .font(.system(size: 11))
                     
                     HStack(spacing: 4) {
                         ForEach(extensionCounts.prefix(4), id: \.ext) { item in
@@ -61,57 +59,46 @@ struct ContextBannerView: View {
                     
                     Spacer()
                     
-                    Button(action: { withAnimation { isExpanded.toggle() } }) {
-                        HStack(spacing: 3) {
-                            Text(isExpanded ? "Nascondi" : "Mostra file")
-                                .font(.system(size: 10))
-                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8))
-                        }
-                        .foregroundColor(.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Text("Nessun file selezionato")
-                        .font(.system(size: 11))
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.secondary)
-                    
-                    Spacer()
                 }
-            }
-            
-            // Selected files pills list (toggled via isExpanded or shown by default if <= 5 files)
-            if selectedFilesCount > 0 && (isExpanded || selectedFilesCount <= 5) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(selectedFiles, id: \.self) { url in
-                            HStack(spacing: 4) {
-                                Image(systemName: "doc.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.accentColor.opacity(0.8))
-                                Text(url.lastPathComponent)
-                                    .font(.system(size: 10, weight: .medium))
-                                    .lineLimit(1)
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }
+                
+                // File list — always collapsed by default, toggle on tap
+                if isExpanded {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(selectedFiles, id: \.self) { url in
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.accentColor.opacity(0.8))
+                                    Text(url.lastPathComponent)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Color.accentColor.opacity(0.08))
+                                .cornerRadius(4)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .strokeBorder(Color.accentColor.opacity(0.15), lineWidth: 1)
+                                )
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.08))
-                            .cornerRadius(4)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .strokeBorder(Color.accentColor.opacity(0.15), lineWidth: 1)
-                            )
                         }
                     }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.04))
+            .cornerRadius(6)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.04))
-        .cornerRadius(6)
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
     }
 }

@@ -81,39 +81,7 @@ struct CommandPaletteView: View {
                         .controlSize(.small)
                 }
                 
-                // Thinking Mode / Complexity Indicator Badge
-                let complexity = Planner.analyzeComplexity(query: query)
-                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    if complexity.isComplex {
-                        HStack(spacing: 4) {
-                            Image(systemName: "brain.head.profile")
-                                .font(.system(size: 10))
-                                .foregroundColor(.purple)
-                            Text("Ragionamento AI")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.purple)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.purple.opacity(0.15))
-                        .cornerRadius(5)
-                        .help("Query complessa: l'AI utilizzerà il ragionamento esteso per valutare le regole logiche")
-                    } else {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 9))
-                                .foregroundColor(.orange)
-                            Text("Veloce (0ms)")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.primary.opacity(0.06))
-                        .cornerRadius(5)
-                        .help("Query diretta: il ragionamento è disabilitato per risposte istantanee")
-                    }
-                }
+
                 
                 // Model selector
                 Menu {
@@ -148,53 +116,47 @@ struct CommandPaletteView: View {
                 .fixedSize()
                 .help("Modello AI: \(selectedProvider.rawValue)")
                 
-                // Settings
-                SettingsLink {
-                    Image(systemName: "gearshape")
+                // More menu (Settings, History, Help, Debug)
+                Menu {
+                    Button(action: {
+                        showHistory.toggle()
+                        showDebug = false
+                        showHelp = false
+                    }) {
+                        Label("Cronologia", systemImage: "clock.arrow.circlepath")
+                    }
+                    
+                    Button(action: {
+                        showHelp.toggle()
+                        showHistory = false
+                        showDebug = false
+                    }) {
+                        Label("Guida", systemImage: "questionmark.circle")
+                    }
+                    
+                    Divider()
+                    
+                    Button(action: {
+                        showDebug.toggle()
+                        showHistory = false
+                        showHelp = false
+                    }) {
+                        Label(showDebug ? "Nascondi debug" : "Debug", systemImage: "ladybug")
+                    }
+                    
+                    Divider()
+                    
+                    SettingsLink {
+                        Label("Impostazioni…", systemImage: "gearshape")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Impostazioni")
-                
-                // History
-                Button(action: {
-                    showHistory.toggle()
-                    showDebug = false
-                }) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.caption)
-                        .foregroundColor(showHistory ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("h", modifiers: [.command])
-                .help("Cronologia operazioni (Cmd+H)")
-                
-                // Help toggle
-                Button(action: {
-                    showHelp.toggle()
-                    showHistory = false
-                    showDebug = false
-                }) {
-                    Image(systemName: "questionmark.circle")
-                        .font(.caption)
-                        .foregroundColor(showHelp ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Guida & limitazioni")
-                
-                // Debug toggle
-                Button(action: {
-                    showDebug.toggle()
-                    showHistory = false
-                    showHelp = false
-                }) {
-                    Image(systemName: "ladybug")
-                        .font(.caption)
-                        .foregroundColor(showDebug ? .orange : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Mostra/nascondi log di debug")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Altro (Cronologia, Guida, Debug, Impostazioni)")
                 
                 // Close button
                 Button(action: dismiss) {
@@ -547,25 +509,15 @@ struct OutputFilesView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header Banner
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(Color.green.opacity(0.18))
-                        .frame(width: 32, height: 32)
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.title2)
-                }
+            // Header — single line
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.title3)
                 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(headerTitle)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.primary)
-                    Text("Operazione completata con successo")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                Text(headerTitle)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.primary)
                 
                 Spacer()
                 
@@ -592,10 +544,10 @@ struct OutputFilesView: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
-                .padding(.leading, 4)
+                .help("Chiudi (⌘⇧Z per annullare)")
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .background(Color.green.opacity(0.06))
             
             Divider()
@@ -609,33 +561,6 @@ struct OutputFilesView: View {
                 }
                 .padding(10)
             }
-            
-            Divider()
-            
-            // Bottom Undo Hint Bar
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.uturn.backward.circle")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Premi")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("⌘ ⇧ Z")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.primary.opacity(0.1))
-                        .cornerRadius(3)
-                    Text("in qualsiasi momento per annullare")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.02))
         }
         .background(Color.primary.opacity(0.03))
         .cornerRadius(10)
@@ -650,11 +575,11 @@ struct OutputFilesView: View {
     private var headerTitle: String {
         let count = transaction.createdURLs.count
         if count == 0 {
-            return "Operazione completata"
+            return "Completato"
         } else if count == 1 {
-            return "1 file creato con successo"
+            return "1 file creato"
         } else {
-            return "\(count) file creati con successo"
+            return "\(count) file creati"
         }
     }
     
@@ -666,70 +591,27 @@ struct OutputFilesView: View {
 struct OutputFileRow: View {
     let url: URL
     @State private var isHovered = false
-    @State private var fileSize: String = ""
     @State private var fileIcon: NSImage? = nil
-    
-    private var extUpper: String {
-        url.pathExtension.uppercased()
-    }
     
     var body: some View {
         HStack(spacing: 10) {
             if let fileIcon {
                 Image(nsImage: fileIcon)
                     .resizable()
-                    .frame(width: 32, height: 32)
+                    .frame(width: 28, height: 28)
             } else {
                 Color.clear
-                    .frame(width: 32, height: 32)
+                    .frame(width: 28, height: 28)
             }
             
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(url.lastPathComponent)
-                        .font(.system(size: 12, weight: .bold))
-                        .lineLimit(1)
-                    
-                    if !extUpper.isEmpty {
-                        Text(extUpper)
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.12))
-                            .foregroundColor(.accentColor)
-                            .cornerRadius(3)
-                    }
-                }
-                
-                Text(url.deletingLastPathComponent().path)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(url.lastPathComponent)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
             
             Spacer()
             
-            if !fileSize.isEmpty {
-                Text(fileSize)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.trailing, 4)
-            }
-            
-            // Open File Button
-            Button(action: { NSWorkspace.shared.open(url) }) {
-                Text("Apri")
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.08))
-                    .cornerRadius(4)
-            }
-            .buttonStyle(.plain)
-            .help("Apri file")
-            
-            // Reveal in Finder Button
+            // Reveal in Finder
             Button(action: { NSWorkspace.shared.activateFileViewerSelecting([url]) }) {
                 Image(systemName: "folder")
                     .font(.system(size: 12))
@@ -739,7 +621,7 @@ struct OutputFileRow: View {
             .help("Mostra nel Finder")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(isHovered ? Color.primary.opacity(0.06) : Color.primary.opacity(0.03))
@@ -749,17 +631,8 @@ struct OutputFileRow: View {
             NSWorkspace.shared.open(url)
         }
         .task {
-            guard fileSize.isEmpty else { return }
             let path = url.path
-            let sizeStr: String
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? Int64 {
-                sizeStr = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-            } else {
-                sizeStr = ""
-            }
             await MainActor.run {
-                self.fileSize = sizeStr
                 if self.fileIcon == nil {
                     self.fileIcon = NSWorkspace.shared.icon(forFile: path)
                 }

@@ -88,7 +88,8 @@ final class GenericShellAction: ActionExecutor {
         }
         
         let lower = cmd.lowercased()
-        let forbidden = ["sudo ", "rm -rf /", "rm -rf ~", "rm -rf *", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"]
+        let forbidden = ["sudo ", "rm -rf /", "rm -rf ~", "rm -rf *", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:",
+                         "killall", "pkill ", "osascript", "launchctl", "shutdown", "reboot", "halt"]
         for bad in forbidden {
             if lower.contains(bad) {
                 throw ExecutorError.validationFailed("Comando bloccato per la tua sicurezza: l'esecuzione di '\(bad.trimmingCharacters(in: .whitespaces))' non è consentita da Atlas.")

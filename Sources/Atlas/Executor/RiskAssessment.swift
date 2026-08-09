@@ -143,6 +143,13 @@ struct RiskAssessment {
                     items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Video convertito"))
                 }
                 
+            case "file.copy":
+                maxRisk = max(maxRisk, .low)
+                for input in step.inputs {
+                    let targetURL = dir.appendingPathComponent("copie").appendingPathComponent(input)
+                    items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Creazione di copie multiple in cartella 'copie'"))
+                }
+                
             case "file.select", "shell.calc":
                 // Pure selection / computation — no filesystem modification or risk!
                 break
