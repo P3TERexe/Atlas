@@ -74,6 +74,13 @@ struct RiskAssessment {
                     items.append(PredictedFileItem(url: fileURL, action: .modify, reason: "Rinominato secondo template '\(step.format ?? "")'"))
                 }
                 
+            case "file.trash":
+                maxRisk = .high
+                for input in step.inputs {
+                    let fileURL = dir.appendingPathComponent(input)
+                    items.append(PredictedFileItem(url: fileURL, action: .delete, reason: "Spostamento nel Cestino di macOS"))
+                }
+                
             case "image.convert":
                 for input in step.inputs {
                     let originalURL = dir.appendingPathComponent(input)

@@ -36,6 +36,13 @@ class FilePlugin: AtlasPlugin {
                 outputFormats: [],
                 executor: SelectFilesAction()
             ),
+            ToolCapability(
+                id: "file.trash",
+                description: "Safely moves file(s) or directory(ies) to the macOS Trash Bin (recoverable via Cestino). Set 'inputs' to target file names.",
+                inputFormats: [],
+                outputFormats: [],
+                executor: TrashFilesAction()
+            ),
         ]
     }
 }
@@ -321,6 +328,45 @@ final class SelectFilesAction: ActionExecutor {
         }
         
         return initialURLs
+    }
+}
+
+// MARK: - Safe Trash Files Action
+
+final class TrashFilesAction: ActionExecutor {
+    func validate(step: ActionStep, context: FinderContext) throws {
+        try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
+    }
+    
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true)
+        guard !files.isEmpty else {
+            return ActionResult(success: true, outputFiles: [], message: "Nessun elemento da spostare nel Cestino.")
+        }
+        
+        var trashedCount = 0
+        var backupURLs: [URL: URL] = [:]
+        
+        for (index, file) in files.enumerated() {
+            progress?(index + 1, files.count, "Spostamento nel Cestino: \(file.lastPathComponent)")
+            var resultingURL: NSURL?
+            do {
+                try FileManager.default.trashItem(at: file, resultingItemURL: &resultingURL)
+                trashedCount += 1
+                if let newTrashURL = resultingURL as URL? {
+                    backupURLs[file] = newTrashURL
+                }
+            } catch {
+                throw ExecutorError.executionFailed("Impossibile spostare '\(file.lastPathComponent)' nel Cestino: \(error.localizedDescription)")
+            }
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: [],
+            message: "Spostati \(trashedCount) elementi nel Cestino di macOS",
+            backupURLs: backupURLs
+        )
     }
 }
 
