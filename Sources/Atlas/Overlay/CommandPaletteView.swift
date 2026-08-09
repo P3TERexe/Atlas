@@ -425,9 +425,16 @@ struct CommandPaletteView: View {
             do {
                 let graph = try await planner.plan(query: query, context: context)
                 guard !Task.isCancelled else { return }
-                self.plannedGraph = graph
-                withAnimation { self.isExecuting = false }
-                self.progress = nil
+                
+                let assessment = RiskAssessment.analyze(graph: graph, context: context)
+                if assessment.riskLevel == .none {
+                    // Instant 0ms execution for zero risk operations (file.select, shell.calc, read-only)
+                    self.executeGraph(graph)
+                } else {
+                    self.plannedGraph = graph
+                    withAnimation { self.isExecuting = false }
+                    self.progress = nil
+                }
             } catch is CancellationError {
                 // Silently handled — cancelCurrentTask() already updated UI
             } catch {
