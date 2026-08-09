@@ -621,7 +621,9 @@ struct OutputFilesView: View {
     }
     
     private func revealAll() {
-        NSWorkspace.shared.activateFileViewerSelecting(transaction.createdURLs)
+        Task {
+            await FinderSelector.select(urls: transaction.createdURLs)
+        }
     }
 }
 
