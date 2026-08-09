@@ -113,9 +113,16 @@ class OverlayWindowController: NSWindowController {
     }
     
     @objc func windowDidResignKey() {
-        // Automatically hide on focus loss ONLY if in HUD overlay mode
+        // Automatically hide on focus loss ONLY if in HUD overlay mode.
+        // Adds a 350ms graceful delay so instant selection actions in Finder
+        // display their result banner before the overlay smoothly hides.
         if !AppSettings.shared.useStandardWindow {
-            hideOverlay()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self, let window = self.window else { return }
+                if !window.isKeyWindow {
+                    self.hideOverlay()
+                }
+            }
         }
     }
     

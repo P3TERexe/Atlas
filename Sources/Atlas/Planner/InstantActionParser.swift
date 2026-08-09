@@ -63,10 +63,20 @@ struct InstantActionParser {
         // File selection shorthands
         "seleziona le foto": Rule(tool: "file.select", exts: MediaFormats.image),
         "seleziona foto": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona tutte le foto": Rule(tool: "file.select", exts: MediaFormats.image),
         "seleziona le immagini": Rule(tool: "file.select", exts: MediaFormats.image),
         "seleziona immagini": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona tutte le immagini": Rule(tool: "file.select", exts: MediaFormats.image),
+        "seleziona i file": Rule(tool: "file.select", exts: nil),
+        "seleziona tutti i file": Rule(tool: "file.select", exts: nil),
+        "seleziona i pdf": Rule(tool: "file.select", exts: MediaFormats.pdf),
+        "seleziona tutti i pdf": Rule(tool: "file.select", exts: MediaFormats.pdf),
+        "seleziona i video": Rule(tool: "file.select", exts: MediaFormats.video),
+        "seleziona tutti i video": Rule(tool: "file.select", exts: MediaFormats.video),
         "select photos": Rule(tool: "file.select", exts: MediaFormats.image),
+        "select all photos": Rule(tool: "file.select", exts: MediaFormats.image),
         "select images": Rule(tool: "file.select", exts: MediaFormats.image),
+        "select all images": Rule(tool: "file.select", exts: MediaFormats.image),
     ]
     
     static func parse(query: String, context: FinderContext) -> ActionGraph? {
