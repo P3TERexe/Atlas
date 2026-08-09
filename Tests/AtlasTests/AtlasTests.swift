@@ -87,6 +87,25 @@ final class AtlasTests: XCTestCase {
         XCTAssertNil(InstantActionParser.parse(query: "riordina la cartella per data", context: context))
     }
     
+    // MARK: - FinderSelector
+    
+    func testAppleScriptLiteralEscapesQuotesAndBackslashes() {
+        XCTAssertEqual(FinderSelector.appleScriptLiteral("pippo\"jpg"), "\"pippo\\\"jpg\"")
+        XCTAssertEqual(FinderSelector.appleScriptLiteral(#"a\b"#), #""a\\b""#)
+    }
+    
+    func testSelectScriptUsesSelectCommandAndResolvesAliasesOutsideTell() {
+        let script = FinderSelector.buildSelectScript(
+            directory: URL(fileURLWithPath: "/tmp/foto"),
+            files: [URL(fileURLWithPath: "/tmp/foto/a.jpg"), URL(fileURLWithPath: "/tmp/foto/b.jpg")]
+        )
+        
+        XCTAssertTrue(script.contains(#"set end of theItems to (POSIX file thePath as alias)"#))
+        XCTAssertTrue(script.contains("select theItems"))
+        XCTAssertTrue(script.contains(#"tell application "Finder""#))
+        XCTAssertLessThan(script.range(of: #"tell application "Finder""#)!.lowerBound, script.range(of: "select theItems")!.lowerBound)
+    }
+    
     // MARK: - ActionGraph.topologicallySorted
     
     func testTopologicalSortHonorsDependencies() throws {

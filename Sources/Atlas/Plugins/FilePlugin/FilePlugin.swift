@@ -277,7 +277,7 @@ final class CompressFilesAction: ActionExecutor {
 /// Seleziona file nel Finder in modo sicuro anche con liste molto grandi
 /// (migliaia di elementi): l'API `activateFileViewerSelecting` va in crash
 /// quando l'array di URL è enorme, quindi per le liste grandi si usa
-/// AppleScript (`set selection of front window`), che regge migliaia di voci.
+/// AppleScript (comando `select`), che regge migliaia di voci.
 enum FinderSelector {
     /// Soglia oltre la quale si usa AppleScript invece dell'API nativa.
     private static let scriptThreshold = 100
@@ -309,20 +309,22 @@ enum FinderSelector {
         )
     }
     
-    private static func buildSelectScript(directory: URL, files: [URL]) -> String {
+    static func buildSelectScript(directory: URL, files: [URL]) -> String {
         let paths = files
             .map { appleScriptLiteral($0.path) }
             .joined(separator: ", ")
+        // Nota: gli alias si risolvono FUORI dal blocco `tell application "Finder"`,
+        // perché dentro il tell la coercizione `POSIX file ... as alias` fallisce.
         return """
+        set theTarget to POSIX file \(appleScriptLiteral(directory.path)) as alias
+        set theItems to {}
+        repeat with thePath in {\(paths)}
+            try
+                set end of theItems to (POSIX file thePath as alias)
+            end try
+        end repeat
         tell application "Finder"
             activate
-            set theTarget to POSIX file \(appleScriptLiteral(directory.path)) as alias
-            set theItems to {}
-            repeat with thePath in {\(paths)}
-                try
-                    set end of theItems to (POSIX file thePath as alias)
-                end try
-            end repeat
             if (count of Finder windows) > 0 then
                 set target of front window to theTarget
             else
@@ -330,13 +332,13 @@ enum FinderSelector {
                 set target of theWindow to theTarget
             end if
             if (count of theItems) > 0 then
-                set selection of front window to theItems
+                select theItems
             end if
         end tell
         """
     }
     
-    private static func appleScriptLiteral(_ string: String) -> String {
+    static func appleScriptLiteral(_ string: String) -> String {
         let escaped = string
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
