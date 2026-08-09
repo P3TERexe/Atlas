@@ -8,12 +8,14 @@ enum FileActionType: String, Codable {
 }
 
 enum RiskLevel: String, Codable, Comparable {
+    case none
     case low
     case medium
     case high
     
     private var severity: Int {
         switch self {
+        case .none: return 0
         case .low: return 1
         case .medium: return 2
         case .high: return 3
@@ -26,6 +28,7 @@ enum RiskLevel: String, Codable, Comparable {
     
     var title: String {
         switch self {
+        case .none: return "Nullo"
         case .low: return "Basso"
         case .medium: return "Medio"
         case .high: return "Alto"
@@ -34,6 +37,7 @@ enum RiskLevel: String, Codable, Comparable {
     
     var iconName: String {
         switch self {
+        case .none: return "shield.slash"
         case .low: return "checkmark.shield"
         case .medium: return "exclamationmark.shield"
         case .high: return "hand.raised.square"
@@ -55,11 +59,11 @@ struct RiskAssessment {
     
     static func analyze(graph: ActionGraph, context: FinderContext) -> RiskAssessment {
         guard let dir = context.currentDirectory else {
-            return RiskAssessment(riskLevel: .low, predictedItems: [], summaryMessage: "Nessun impatto rilevato")
+            return RiskAssessment(riskLevel: .none, predictedItems: [], summaryMessage: "Nessun rischio — operazione nel Finder.")
         }
         
         var items: [PredictedFileItem] = []
-        var maxRisk: RiskLevel = .low
+        var maxRisk: RiskLevel = .none
         
         for step in graph.steps {
             switch step.tool {
@@ -82,18 +86,21 @@ struct RiskAssessment {
                         maxRisk = max(maxRisk, .medium)
                         items.append(PredictedFileItem(url: targetURL, action: .modify, reason: "Sovrascrizione file originale"))
                     } else {
+                        maxRisk = max(maxRisk, .low)
                         items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Generata nuova immagine"))
                     }
                 }
                 
             case "file.zip", "file.compress":
+                maxRisk = max(maxRisk, .low)
                 let archiveName = step.format ?? "archive.zip"
                 let targetURL = dir.appendingPathComponent(archiveName)
                 items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Creato nuovo archivio ZIP"))
                 
-            case "pdf.merge":
+            case "pdf.merge", "pdf.fromImages":
+                maxRisk = max(maxRisk, .low)
                 let targetURL = dir.appendingPathComponent("merged.pdf")
-                items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Unione di \(step.inputs.count) file PDF"))
+                items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Unione di file in PDF"))
                 
             case "pdf.split":
                 maxRisk = max(maxRisk, .medium)
@@ -104,6 +111,7 @@ struct RiskAssessment {
                 }
                 
             case "pdf.compress":
+                maxRisk = max(maxRisk, .low)
                 for input in step.inputs {
                     let base = (input as NSString).deletingPathExtension
                     let targetURL = dir.appendingPathComponent("\(base)-compressed.pdf")
@@ -111,6 +119,7 @@ struct RiskAssessment {
                 }
                 
             case "video.extractAudio":
+                maxRisk = max(maxRisk, .low)
                 for input in step.inputs {
                     let base = (input as NSString).deletingPathExtension
                     let ext = step.format ?? "m4a"
@@ -119,6 +128,7 @@ struct RiskAssessment {
                 }
                 
             case "video.convert":
+                maxRisk = max(maxRisk, .low)
                 for input in step.inputs {
                     let base = (input as NSString).deletingPathExtension
                     let ext = step.format ?? "mp4"
@@ -127,7 +137,7 @@ struct RiskAssessment {
                 }
                 
             case "file.select", "shell.calc":
-                // Pure selection / computation — no filesystem impact
+                // Pure selection / computation — no filesystem modification or risk!
                 break
                 
             case "shell.run":
@@ -150,6 +160,8 @@ struct RiskAssessment {
         
         let summary: String
         switch maxRisk {
+        case .none:
+            summary = "Nessun rischio — operazione di sola lettura o selezione elementi nel Finder."
         case .low:
             summary = "Operazione sicura — verranno creati nuovi file senza sovrascrizioni."
         case .medium:
@@ -157,6 +169,9 @@ struct RiskAssessment {
         case .high:
             summary = "Attenzione: l'operazione modificherà file esistenti direttamente."
         }
+        
+        return RiskAssessment(riskLevel: maxRisk, predictedItems: items, summaryMessage: summary)
+    }
         
         return RiskAssessment(riskLevel: maxRisk, predictedItems: items, summaryMessage: summary)
     }

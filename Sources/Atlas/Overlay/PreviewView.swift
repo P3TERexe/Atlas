@@ -105,7 +105,12 @@ struct PreviewView: View {
     }
     
     private func riskBadge(for level: RiskLevel) -> some View {
-        let color: Color = level == .low ? .green : level == .medium ? .orange : .red
+        let color: Color = switch level {
+        case .none: .blue
+        case .low: .green
+        case .medium: .orange
+        case .high: .red
+        }
         return HStack(spacing: 5) {
             Image(systemName: level.iconName)
                 .font(.caption.bold())
