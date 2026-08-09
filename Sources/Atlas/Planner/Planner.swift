@@ -35,8 +35,8 @@ class Planner {
             return instantGraph
         }
         
-        let isSmallContextModel = activeProvider == .apple || activeProvider == .ollama
-        let initialPrompt = isSmallContextModel
+        let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
+        let initialPrompt = activeRules.isEmpty
             ? promptBuilder.buildCompactPrompt(query: query, context: context)
             : promptBuilder.buildPrompt(query: query, context: context)
             

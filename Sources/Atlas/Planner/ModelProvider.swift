@@ -122,7 +122,11 @@ struct OllamaModelProvider: ModelProvider {
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "format": "json"
+            "format": "json",
+            "options": [
+                "temperature": 0.0,
+                "num_predict": 350
+            ]
         ]
         
         guard let url = URL(string: endpoint) else {
@@ -179,7 +183,8 @@ struct OpenAIModelProvider: ModelProvider {
             "model": model,
             "messages": messages,
             "response_format": ["type": "json_object"],
-            "temperature": 0.2
+            "temperature": 0.0,
+            "max_tokens": 350
         ]
         
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
@@ -232,8 +237,9 @@ struct ClaudeModelProvider: ModelProvider {
         
         let requestBody: [String: Any] = [
             "model": model,
-            "max_tokens": 2000,
-            "system": "You are a filesystem assistant. Translate the user request into a structured ActionGraph JSON. Use tool IDs from the available tools list. Output ONLY the JSON object, no markdown.",
+            "max_tokens": 350,
+            "temperature": 0.0,
+            "system": "You are a filesystem assistant. Translate the user request into a structured ActionGraph JSON. Use tool IDs from the available tools list. Output ONLY the raw JSON object, no markdown.",
             "messages": [
                 ["role": "user", "content": prompt]
             ]
@@ -306,8 +312,8 @@ struct NvidiaModelProvider: ModelProvider {
         let requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 1024
+            "temperature": 0.0,
+            "max_tokens": 350
         ]
         
         guard let url = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions") else {
@@ -428,8 +434,8 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         let requestBody: [String: Any] = [
             "model": activeModel,
             "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 1024
+            "temperature": 0.0,
+            "max_tokens": 350
         ]
         
         var request = URLRequest(url: url)
@@ -512,8 +518,8 @@ struct OpenCodeModelProvider: ModelProvider {
         let requestBody: [String: Any] = [
             "model": model,
             "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 1024
+            "temperature": 0.0,
+            "max_tokens": 350
         ]
         
         var request = URLRequest(url: url)

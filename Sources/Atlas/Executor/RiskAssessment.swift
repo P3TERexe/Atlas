@@ -172,7 +172,4 @@ struct RiskAssessment {
         
         return RiskAssessment(riskLevel: maxRisk, predictedItems: items, summaryMessage: summary)
     }
-        
-        return RiskAssessment(riskLevel: maxRisk, predictedItems: items, summaryMessage: summary)
-    }
 }
