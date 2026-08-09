@@ -23,11 +23,9 @@ Atlas capisce il contesto (dove sei, cosa hai selezionato), costruisce un piano 
 ## Comportamento desiderato
 
 ### Attivazione
-
-- Atlas si attiva **solo quando Finder è l'app in primo piano**
+- Atlas porta automaticamente il Finder in primo piano alla pressione della scorciatoia
 - Scorciatoia globale: `⌥ Space`
-- Se Finder non è attivo, la scorciatoia non fa nulla
-- L'overlay è un pannello flottante, senza bordi, con sfondo frosted glass
+- L'overlay è un pannello flottante con sfondo frosted glass, oppure una finestra macOS standard configurabile nelle Impostazioni
 
 ### Flusso principale
 
@@ -36,25 +34,23 @@ Atlas capisce il contesto (dove sei, cosa hai selezionato), costruisce un piano 
 2. Seleziona i file su cui lavorare (opzionale)
 3. Premi ⌥ Space
 4. Scrivi cosa vuoi fare in linguaggio naturale
-5. Atlas analizza la richiesta e mostra un piano (anteprima)
-6. Confermi → Atlas esegue
+5. Atlas analizza la richiesta e mostra un piano (anteprima con comandi terminale completi e badge di rischio)
+6. Confermi → Atlas esegue con barra di progresso in tempo reale
 7. Se qualcosa va storto → ⌘⇧Z per annullare tutto
 ```
 
-### Anteprima obbligatoria
-
-Atlas **non esegue mai direttamente** un comando senza mostrarti prima:
-- Quali file verranno toccati
-- In quale formato/modalità
-- Parametri rilevati (qualità, destinazione, ecc.)
-
-Solo dopo la tua conferma esplicita ([Esegui]) Atlas procede.
+### Anteprima ed Esecuzione Istantanea
+- **Operazioni a Rischio Nullo** (`file.select`, `shell.calc`): Vengono eseguite **istantaneamente a 0ms** senza schermate intermedie.
+- **Operazioni con Modifiche**: Atlas ti mostra sempre l'anteprima completa prima di eseguire:
+  - Quali file verranno toccati e l'esatto comando da terminale (multi-linea senza tagli)
+  - Livello di rischio valutato (Basso / Medio / Alto)
 
 ### Undo transazionale
 
 Ogni operazione crea una `Transaction` che traccia:
 - I file **creati** (possono essere eliminati per rollback)
 - I file **modificati** (vengono salvati in backup prima)
+- I file **spostati nel Cestino** (vengono ripristinati nella posizione originale)
 
 `⌘⇧Z` inverte l'ultima transazione completata.
 
@@ -66,46 +62,47 @@ Ogni operazione crea una `Transaction` che traccia:
 
 | Funzione | Stato |
 |----------|-------|
-| Overlay globale (`⌥ Space`) | ✅ |
-| Attivazione solo da Finder | ✅ |
-| Lettura contesto Finder (cartella, selezione) | ✅ |
+| Overlay globale (`⌥ Space`) con auto-attivazione Finder | ✅ |
+| Attivazione e lettura contesto Finder (cartella, selezione, file visibili) | ✅ |
 | Pianificazione con Apple Foundation Models | ✅ |
 | Fallback Ollama locale | ✅ |
 | Selettore modello AI nella UI | ✅ |
 | Anteprima piano prima dell'esecuzione | ✅ |
 | Esecuzione via Plugin SDK | ✅ |
-| Plugin ImagePlugin (conversione immagini via `sips`) | ✅ |
-| Pannello Impostazioni & API Keys (Keychain + Ollama/OpenAI/Claude/NVIDIA) | ✅ |
+| Plugin ImagePlugin (conversione immagini via `ImageIO` e `sips`) | ✅ |
+| Pannello Impostazioni & API Keys (Keychain + Ollama/OpenAI/Claude/NVIDIA/OpenCode AI) | ✅ |
 | Undo transazionale (`⌘⇧Z`) | ✅ |
-| Progress in tempo reale | ✅ |
+| Progress in tempo reale con indicazione del singolo file | ✅ |
 | Suggerimenti contestuali cliccabili | ✅ |
 
-### Sprint 2 — Completato ✅
+### Sprint 2 — Core Plugins & Multi-Plugin Pipeline ✅
 
 | Funzione | Stato |
 |----------|-------|
-| Plugin PDF (merge, split, compress) | ✅ |
-| Cronologia operazioni (persistente, Cmd+H nella palette) | ✅ |
-| Barra di progresso dettagliata (step per step) | ✅ |
+| Plugin PDF (merge, split, compress, `pdf.fromImages` da Immagini a PDF nativo) | ✅ |
+| Cronologia operazioni (persistente, Cmd+H nella palette, riesecuzione ed undo selettivo) | ✅ |
+| Barra di progresso dettagliata in tempo reale con % e nome file | ✅ |
 | Plugin Video (estrai audio m4a/mp3, converti mp4/mov) | ✅ |
-| Plugin File (rinomina batch con template, zip, comprimi) | ✅ |
+| Plugin File (rinomina batch con template, zip, comprimi, `file.trash` Cestino nativo) | ✅ |
 | Pipeline multi-step (DAG con dipendenze) | ✅ |
-| Provider NVIDIA + base URL custom | ✅ |
+| Provider OpenCode AI (Zen API) + NVIDIA + Base URL Custom | ✅ |
 
 ### Sprint 3 — Substage Parity & Advanced Capabilities ✅
 
 | Funzione | Stato |
 |----------|-------|
-| **Instant Actions (0ms)**: Parser locale deterministico per shorthand (`jpg`, `png`, `zip`, `mp3`, `bw`, etc.) | ✅ |
-| **Risk Assessment**: Simulazione impatto file e badge di rischio (Basso/Medio/Alto) prima dell'esecuzione | ✅ |
+| **Instant Actions (0ms)**: Parser locale deterministico per shorthand (`jpg`, `png`, `zip`, `mp3`, `bw`, `immagini in pdf`, `seleziona foto`, etc.) | ✅ |
+| **Risk Assessment & Risk Level None**: Livelli di rischio (Nullo/Basso/Medio/Alto) con auto-esecuzione a 0ms per azioni di sola lettura | ✅ |
+| **Cestino macOS Sicuro (`file.trash`)**: Spostamento nativo nel Cestino con `trashItem` e rollback completo | ✅ |
+| **Comandi Shell Generici e Filtri di Sicurezza (`shell.run`)**: Esecuzione aperta di comandi `zsh` con blocco automatico dei comandi distruttivi (`sudo`, `rm -rf /`, `rm -rf ~`) | ✅ |
+| **Visualizzazione Comandi Lunghi Multi-Linea**: Multi-line wrapping completo nell'anteprima senza tagli o troncamenti | ✅ |
+| **Modalità Finestra Vera vs Overlay HUD**: Opzione configurabile nelle impostazioni dell'app | ✅ |
 | **Rules System**: Regole e preferenze utente personalizzate persistenti (`rules.json` + iniezione nel prompt) | ✅ |
-| **PlanValidator & Autocorrezione**: Validazione aderenza query/formato con ciclo di retry automatico | ✅ |
+| **PlanValidator & Autocorrezione**: Validazione aderenza query/formato con ciclo di retry ed estrazione estensione file | ✅ |
 | **Rollback Selettivo**: Annullamento arbitrario di qualsiasi transazione storica dal menu Cronologia | ✅ |
 | **Esecuzione CLI Asincrona (`AsyncProcessRunner`)**: Processi fuori dal MainActor per UI sempre fluida | ✅ |
-| **Plugin Shell**: Calcolatrice ad alta precisione `shell.calc` (`bc`) ed esecutore shell trasparent `shell.run` | ✅ |
-| **ImagePlugin Avanzato**: Resize (`image.resize`), rotazione (`image.rotate`), miniature (`image.thumbnail`), EXIF (`image.stripExif`) | ✅ |
-| **Selezione Finder**: Evidenziazione diretta file nel Finder (`file.select`) | ✅ |
-| **Zip Ricorsivo Cartelle**: Supporto compressione gerarchia directory (`zip -r`) | ✅ |
+| **Plugin Shell**: Calcolatrice ad alta precisione `shell.calc` (`bc`) ed esecutore shell generico | ✅ |
+| **ImagePlugin Avanzato**: Resize, rotazione, miniature, EXIF e conversione in Bianco e Nero (`grayscale`) | ✅ |
 | **Navigazione Cronologia Tasti Frecce (↑/↓)**: Cycling stile terminale delle query precedenti | ✅ |
 
 ---
@@ -113,34 +110,31 @@ Ogni operazione crea una `Transaction` che traccia:
 ## To-Do e Roadmap
 
 ### ✅ Funzionalità Completate Recenti
-- [x] **Funzioni Complesse & Pipeline Multi-Plugin**: Esecuzione diretta di workflow multi-formato (es. *"prendi tutte le immagini selezionate e mettile in un unico PDF"*, `pdf.fromImages` a 0ms nativo). ✅
-- [x] **Instant Actions (Parser Locale 0ms)**: Esecuzione istantanea senza latenza LLM per comandi deterministici. ✅
-- [x] **Risk Assessment & Prediction**: Simulazione visiva dell'impatto sui file e badge del livello di rischio nell'anteprima. ✅
-- [x] **User Rules System**: Gestione regole utente con iniezione dinamica nel prompt dell'AI. ✅
-- [x] **Rollback Selettivo dalla Cronologia**: Annullamento arbitrario di qualsiasi transazione passata via Cmd+H. ✅
-- [x] **Fix Process Bloccante su MainActor**: Esecuzione CLI asincrona con `Task.detached` + `AsyncProcessRunner`. ✅
-- [x] **Plugin Shell & Calcolatrice**: Calcoli deterministici via `bc` ed esecuzione shell generica. ✅
-- [x] **ImagePlugin Avanzato**: Ridimensionamento, rotazione, miniature e pulizia EXIF. ✅
-- [x] **Supporto Cartelle per Zip (`file.zip`/`file.compress`)**: Compressione ricorsiva directory con `zip -r`. ✅
-- [x] **Navigazione Cronologia Comandi (Frecce ↑/↓)**: Navigazione query precedenti con tasti freccia. ✅
-- [x] **Smart Multi-File Resolution**: Risolzione automatica di tutti i file selezionati in Finder. ✅
+- [x] **Integrazione OpenCode AI (Zen API)**: Supporto nativo per i modelli OpenCode (`deepseek-v4-flash-free`, `big-pickle`, `deepseek-v4-pro`, etc.) con gestione API key nel Keychain. ✅
+- [x] **Livello di Rischio Nullo (`RiskLevel.none`) & Esecuzione Istantanea 0ms**: Esecuzione senza schermata di anteprima per operazioni di lettura o selezione. ✅
+- [x] **Comandi Shell Generici (`shell.run`) & Guardiani di Sicurezza**: Supporto per qualsiasi richiesta aperta con blocco automatico dei comandi distruttivi per la sicurezza dell'utente (`sudo`, `rm -rf /`). ✅
+- [x] **Eliminazione Sicura via Cestino (`file.trash`)**: Spostamento nel Cestino di macOS con supporto al ripristino ed all'Undo (`Cmd+Z`). ✅
+- [x] **Barra di Progresso Granulare in Tempo Reale**: Percentuale numerica esatta, animazione fluida ed etichetta del singolo file in lavorazione (`⚙️ Elaborazione 4/10: foto_4.png`). ✅
+- [x] **Visualizzazione Comandi Lunghi Multi-Linea**: Text wrapping completo nell'anteprima per ispezionare integralmente qualsiasi comando terminale generato. ✅
+- [x] **Stile Finestra Personalizzabile**: Opzione per scegliere tra Finestra macOS Standard e Panel Overlay HUD nelle Impostazioni. ✅
+- [x] **Funzioni Complesse (`pdf.fromImages`)**: Unione istantanea di gruppi di immagini in un unico PDF con PDFKit. ✅
 
 ### 🔴 Da Fare Futuro
 - [ ] **Native Tool Calling / Function Calling**: Supporto della specifica OpenAI `tools`/`functions` invece dell'output JSON via prompt.
 - [ ] **Shortcut Tastiera Personalizzabile**: Consentire all'utente di cambiare la scorciatoia di attivazione (oggi fissa su `⌥ Space`).
 - [ ] **Plugin SDK Pubblico & Homebrew Cask**: Struttura modulare per plugin di terze parti e pacchetto di distribuzione.
-- [ ] **Riconoscimento Immagini Nativo Apple per Rinomina File**: Attualmente la rinomina basata sul contenuto delle immagini funziona soltanto tramite OCR (`image.ocrRename` / `VNRecognizeTextRequest`). Indagare se è possibile estenderla al riconoscimento degli oggetti e della scena nativo di Apple (es. Vision Framework / `VNClassifyImageRequest` / `VNGenerateImageFeaturePrintRequest`) per rinominare automaticamente i file in base a ciò che raffigurano (es. se c'è un cane, nominare il file con "cane").
-- [ ] **Dettaglio Comando da Terminale in Cronologia (Tasto 'i')**: Nella vista Cronologia (Cmd+H), aggiungere un pulsante info ('i') su ciascun elemento per visualizzare nel dettaglio l'esatto comando da terminale (CLI command) o operazione nativa eseguita.
+- [ ] **Riconoscimento Immagini Nativo Apple per Rinomina File**: Attualmente la rinomina basata sul contenuto delle immagini funziona soltanto tramite OCR (`image.ocrRename` / `VNRecognizeTextRequest`). Indagare se è possibile estenderla al riconoscimento degli oggetti e della scena nativo di Apple (`VNClassifyImageRequest`) per rinominare automaticamente i file in base a ciò che raffigurano.
+- [ ] **Dettaglio Comando da Terminale in Cronologia (Tasto 'i')**: Nella vista Cronologia (Cmd+H), aggiungere un pulsante info ('i') su ciascun elemento per visualizzare nel dettaglio l'esatto comando da terminale eseguito.
 
 ---
 
 ## Architettura
 
 ```
-⌥ Space
+⌥ Space (Auto-attiva Finder)
     │
     ▼
-OverlayWindowController        ← NSPanel flottante, dark mode, frosted glass
+OverlayWindowController        ← NSPanel flottante o Finestra macOS Standard
     │
     ▼
 FinderContextProvider          ← AppleScript → cartella corrente + selezione
@@ -149,96 +143,31 @@ FinderContextProvider          ← AppleScript → cartella corrente + selezione
 PromptBuilder                  ← Assembla il prompt con contesto + tool registry
     │
     ▼
-Planner ──────────────────────► AppleModelProvider   (default, @Generable)
-                                 OllamaModelProvider  (fallback locale)
-                                 OpenAIModelProvider  (placeholder)
+Planner ──────────────────────► AppleModelProvider      (default, @Generable)
+                                 OpenCodeModelProvider   (OpenCode AI Zen API)
+                                 OllamaModelProvider     (fallback locale)
+                                 OpenAI / Claude / NVIDIA / Custom Provider
     │
     ▼
-ActionGraph                    ← Struct Swift tipizzata (@Generable), DAG di step
+ActionGraph                    ← Struct Swift tipizzata, DAG di step
     │
     ▼
-ExecutorFramework              ← Dispatch topologico, progress callback
+ExecutorFramework              ← Dispatch topologico, progress callback per file
     │
     ├── ToolRegistry           ← Registro dichiarativo dei plugin
     │
-    ├── ImagePlugin            ← image.convert (ImageIO + sips/ffmpeg fallback)
-    ├── PDFPlugin              ← pdf.merge/split (PDFKit) + pdf.compress (gs/magick)
-    ├── VideoPlugin            ← video.extractAudio (AVFoundation/ffmpeg) + video.convert
-    └── FilePlugin             ← file.rename/zip/compress
+    ├── ImagePlugin            ← image.convert / resize / rotate / thumbnail / EXIF
+    ├── PDFPlugin              ← pdf.merge/split/compress + pdf.fromImages (PDFKit)
+    ├── VideoPlugin            ← video.extractAudio + video.convert
+    ├── FilePlugin             ← file.rename/zip/compress/select/trash
+    └── ShellPlugin            ← shell.calc (bc) + shell.run (comandi zsh flessibili)
     │
     ▼
-Transaction + UndoManager      ← Traccia file creati/modificati, rollback
+Transaction + UndoManager      ← Traccia file creati/modificati/cestinati, rollback
     │
     ▼
 HistoryStore                  ← Cronologia persistente (history.json)
 ```
-
-### Principio chiave
-
-> L'LLM decide **cosa** fare (produce un `ActionGraph`).  
-> L'Executor decide **come** farlo (sceglie il tool corretto).
-
-Il modello non vede mai i dettagli di implementazione (`sips`, `ffmpeg`, ecc.).
-Questo rende il sistema sicuro, testabile e indipendente dal modello AI usato.
-
----
-
-## Plugin SDK
-
-Ogni plugin espone `ToolCapability`:
-
-```swift
-ToolCapability(
-    id: "image.convert",
-    description: "Converts images between formats",
-    inputFormats: ["png", "jpg", "heic"],
-    outputFormats: ["webp", "jpg", "png"],
-    executor: ConvertImageAction()
-)
-```
-
-Implementare `ActionExecutor`:
-
-```swift
-protocol ActionExecutor: Sendable {
-    func validate(step: ActionStep, context: FinderContext) throws
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult
-}
-```
-
----
-
-## AI: Apple Foundation Models
-
-Il modello di default è **Apple Foundation Models** (on-device, privato, nessuna API key).
-
-Le strutture dati usano il macro `@Generable` di Apple per garantire output strutturato
-senza parsing JSON manuale:
-
-```swift
-@Generable
-struct ActionGraph {
-    @Guide(description: "Ordered list of actions to execute")
-    var steps: [ActionStep]
-}
-```
-
-**Requisiti**: macOS 26+ su Apple Silicon con Apple Intelligence attivo.  
-**Fallback**: Ollama locale (selezionabile nell'UI).
-
----
-
-## Stack tecnico
-
-| Layer | Tecnologia |
-|-------|-----------|
-| UI | SwiftUI + AppKit (NSPanel) |
-| Hotkey globale | KeyboardShortcuts (sindresorhus) |
-| Contesto Finder | NSAppleScript (AppleScript) |
-| AI primario | Apple Foundation Models (`FoundationModels`) |
-| AI fallback | Ollama REST API locale |
-| Executor | Swift Process (`sips`, `ffmpeg`, ecc.) |
-| Build | Swift Package Manager + Makefile |
 
 ---
 
@@ -247,20 +176,15 @@ struct ActionGraph {
 ```bash
 cd /Users/pepe/Stuff/Substage/Atlas
 
+# Build + installa in /Applications/Atlas.app
+make install
+
 # Build + package + firma + apri
 make run
 
 # Solo build
 make build
-
-# Pulizia
-make clean
 ```
-
-**Requisiti**:
-- macOS 26+ (Tahoe)
-- Xcode 26 / Swift 6.2+
-- Apple Silicon (per Apple Intelligence)
 
 ---
 
@@ -273,31 +197,36 @@ Atlas/
 ├── Info.plist
 ├── Atlas.entitlements
 └── Sources/Atlas/
-    ├── AtlasApp.swift                    ← @main, hotkey, AppDelegate
+    ├── AtlasApp.swift                    ← @main, hotkey, AppDelegate, auto-Finder
     ├── Context/
     │   ├── FinderContext.swift           ← Model: cartella, selezione, tools
     │   └── FinderContextProvider.swift   ← Lettura via AppleScript
     ├── Planner/
-    │   ├── ActionGraph.swift             ← @Generable DAG di ActionStep
-    │   ├── ModelProvider.swift           ← Protocollo + Apple/Ollama/OpenAI/Claude/NVIDIA
-    │   ├── Planner.swift                 ← Coordinatore, delega al provider
-    │   └── PromptBuilder.swift           ← Assembla il system prompt
+    │   ├── ActionGraph.swift             ← DAG di ActionStep
+    │   ├── InstantActionParser.swift     ← Parser locale 0ms per shorthand
+    │   ├── ModelProvider.swift           ← Provider: Apple/OpenCode/Ollama/OpenAI/Claude/NVIDIA
+    │   ├── PlanValidator.swift           ← Validazione aderenza query/formati
+    │   ├── Planner.swift                 ← Coordinatore del piano
+    │   └── PromptBuilder.swift           ← System prompt e compact prompt
     ├── Executor/
-    │   ├── ExecutorFramework.swift       ← Dispatch topologico, progress callback
+    │   ├── ExecutorFramework.swift       ← Progress callbacks per file, dispatch topologico
+    │   ├── RiskAssessment.swift          ← Simulazione impatto file e livelli di rischio (Nullo..Alto)
     │   ├── ToolRegistry.swift            ← Registro plugin
     │   ├── Transaction.swift             ← Backup + rollback (Codable)
     │   ├── HistoryStore.swift            ← Cronologia persistente (JSON)
-    │   └── UndoManager.swift             ← Gestione ⌘⇧Z
+    │   └── UndoManager.swift             ← Gestione ⌘⇧Z e Cestino
     ├── Plugins/
-    │   ├── Plugin.swift                  ← Protocolli: AtlasPlugin, ActionExecutor
-    │   ├── ImagePlugin/ImagePlugin.swift ← image.convert
-    │   ├── PDFPlugin/PDFPlugin.swift     ← pdf.merge/split/compress
+    │   ├── Plugin.swift                  ← ItemProgressCallback, AtlasPlugin, ActionExecutor
+    │   ├── ImagePlugin/ImagePlugin.swift ← image.convert/resize/rotate/thumbnail/stripExif
+    │   ├── PDFPlugin/PDFPlugin.swift     ← pdf.merge/split/compress + pdf.fromImages
     │   ├── VideoPlugin/VideoPlugin.swift ← video.extractAudio/convert
-    │   └── FilePlugin/FilePlugin.swift   ← file.rename/zip/compress
+    │   ├── FilePlugin/FilePlugin.swift   ← file.rename/zip/compress/select/trash
+    │   └── ShellPlugin/ShellPlugin.swift ← shell.calc/run
     └── Overlay/
-        ├── OverlayWindowController.swift ← NSPanel, animazioni, focus
-        ├── CommandPaletteView.swift      ← UI principale + selettore modello
-        ├── PreviewView.swift             ← Anteprima piano prima dell'esecuzione
-        ├── HistoryView.swift             ← Cronologia operazioni
+        ├── OverlayWindowController.swift ← NSPanel flottante / Finestra Standard toggle
+        ├── CommandPaletteView.swift      ← UI principale, selettore modello, barra progress
+        ├── PreviewView.swift             ← Anteprima piano, multi-line command wrapping
+        ├── SettingsView.swift            ← Configurazione provider, Keychain, OpenCode AI, Stile Finestra
+        ├── HistoryView.swift             ← Cronologia ed Undo selettivo
         └── DebugContextView.swift        ← Log prompt/risposta
 ```
