@@ -92,6 +92,7 @@ Ogni operazione crea una `Transaction` che traccia:
 | Funzione | Stato |
 |----------|-------|
 | **Instant Actions (0ms)**: Parser locale deterministico per shorthand (`jpg`, `png`, `zip`, `mp3`, `bw`, `immagini in pdf`, `seleziona foto`, etc.) | ✅ |
+| **Controllo Dinamico Thinking AI & Indicatore UI**: Soppressione del *thinking* per query dirette e badge visivo dinamico (`⚡ Veloce (0ms)` vs `🧠 Ragionamento AI`) per query complesse | ✅ |
 | **Risk Assessment & Risk Level None**: Livelli di rischio (Nullo/Basso/Medio/Alto) con auto-esecuzione a 0ms per azioni di sola lettura | ✅ |
 | **Cestino macOS Sicuro (`file.trash`)**: Spostamento nativo nel Cestino con `trashItem` e rollback completo | ✅ |
 | **Comandi Shell Generici e Filtri di Sicurezza (`shell.run`)**: Esecuzione aperta di comandi `zsh` con blocco automatico dei comandi distruttivi (`sudo`, `rm -rf /`, `rm -rf ~`) | ✅ |
@@ -110,6 +111,7 @@ Ogni operazione crea una `Transaction` che traccia:
 ## To-Do e Roadmap
 
 ### ✅ Funzionalità Completate Recenti
+- [x] **Controllo Dinamico Thinking AI & Indicatore Visivo UI**: Disabilitazione automatica del ragionamento per risposte sotto i 0.5s su richieste semplici e badge visivo dinamico (`⚡ Veloce (0ms)` / `🧠 Ragionamento AI`). ✅
 - [x] **Integrazione OpenCode AI (Zen API)**: Supporto nativo per i modelli OpenCode (`deepseek-v4-flash-free`, `big-pickle`, `deepseek-v4-pro`, etc.) con gestione API key nel Keychain. ✅
 - [x] **Livello di Rischio Nullo (`RiskLevel.none`) & Esecuzione Istantanea 0ms**: Esecuzione senza schermata di anteprima per operazioni di lettura o selezione. ✅
 - [x] **Comandi Shell Generici (`shell.run`) & Guardiani di Sicurezza**: Supporto per qualsiasi richiesta aperta con blocco automatico dei comandi distruttivi per la sicurezza dell'utente (`sudo`, `rm -rf /`). ✅
