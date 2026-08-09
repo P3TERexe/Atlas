@@ -53,6 +53,13 @@ struct InstantActionParser {
         "rinomina ocr": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
         "rinomina con testo": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
         "rinomina per contenuto": Rule(tool: "image.ocrRename", exts: MediaFormats.image),
+        // Images To PDF (Complex pipeline)
+        "immagini in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        "immagini in unico pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        "converti immagini in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        "unisci immagini in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        "foto in pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
+        "images to pdf": Rule(tool: "pdf.fromImages", exts: MediaFormats.image, format: "combined.pdf"),
     ]
     
     static func parse(query: String, context: FinderContext) -> ActionGraph? {

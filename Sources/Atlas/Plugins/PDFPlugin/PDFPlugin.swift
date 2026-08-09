@@ -1,5 +1,6 @@
 import Foundation
 import PDFKit
+import AppKit
 
 // MARK: - Plugin
 
@@ -14,6 +15,13 @@ class PDFPlugin: AtlasPlugin {
                 inputFormats: ["pdf"],
                 outputFormats: ["pdf"],
                 executor: MergePDFAction()
+            ),
+            ToolCapability(
+                id: "pdf.fromImages",
+                description: "Combines multiple image files (png, jpg, webp, heic, tiff) into a single multi-page PDF document. Set 'format' to output filename (default: combined.pdf).",
+                inputFormats: Array(MediaFormats.image).sorted(),
+                outputFormats: ["pdf"],
+                executor: ImagesToPDFAction()
             ),
             ToolCapability(
                 id: "pdf.split",
@@ -284,5 +292,71 @@ final class CompressPDFAction: ActionExecutor {
     private func run(binary: String, arguments: [String]) async throws -> Int32 {
         let result = try await AsyncProcessRunner.run(executableURL: URL(fileURLWithPath: binary), arguments: arguments)
         return result.exitCode
+    }
+}
+
+// MARK: - Images To PDF Action
+
+final class ImagesToPDFAction: ActionExecutor {
+    func validate(step: ActionStep, context: FinderContext) throws {
+        let inputs = resolveImageURLs(step: step, context: context)
+        guard !inputs.isEmpty else {
+            throw ExecutorError.validationFailed("Nessuna immagine trovata da unire in PDF.")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+        let inputs = resolveImageURLs(step: step, context: context)
+        guard let directory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        
+        let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "combined"
+        let baseName = (rawName as NSString).deletingPathExtension
+        let outputURL = PDFResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "pdf")
+        
+        let pdfDocument = PDFDocument()
+        var pagesAdded = 0
+        
+        for inputURL in inputs {
+            guard let image = NSImage(contentsOf: inputURL),
+                  let pdfPage = PDFPage(image: image) else { continue }
+            pdfDocument.insert(pdfPage, at: pdfDocument.pageCount)
+            pagesAdded += 1
+        }
+        
+        guard pagesAdded > 0, pdfDocument.write(to: outputURL) else {
+            throw ExecutorError.executionFailed("Creazione del PDF dalle immagini fallita.")
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: [outputURL],
+            message: "Create \(pagesAdded) pagine in \(outputURL.lastPathComponent) a partire da \(inputs.count) immagini"
+        )
+    }
+    
+    private func resolveImageURLs(step: ActionStep, context: FinderContext) -> [URL] {
+        guard let currentDirectory = context.currentDirectory else { return [] }
+        let imageExts = MediaFormats.image
+        
+        let matchingSelected = context.selectedFiles.filter { url in
+            imageExts.contains(url.pathExtension.lowercased())
+        }
+        
+        if !matchingSelected.isEmpty {
+            return matchingSelected
+        }
+        
+        if !step.inputs.isEmpty {
+            return step.inputs.compactMap { inputPath in
+                let url = currentDirectory.appendingPathComponent(inputPath)
+                return FileManager.default.fileExists(atPath: url.path) ? url : nil
+            }
+        }
+        
+        return context.visibleFiles.filter { url in
+            imageExts.contains(url.pathExtension.lowercased())
+        }
     }
 }

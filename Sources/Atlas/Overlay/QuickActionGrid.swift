@@ -45,6 +45,7 @@ struct QuickActionGrid: View {
             icon: "doc.text",
             pills: [
                 ActionPill(icon: "doc.on.doc", label: "Unisci PDF", command: "unisci pdf", tint: .red),
+                ActionPill(icon: "doc.richtext", label: "Immagini → PDF", command: "immagini in unico pdf", tint: .red),
                 ActionPill(icon: "arrow.down.right.and.arrow.up.left", label: "Comprimi PDF", command: "comprimi pdf", tint: .red),
                 ActionPill(icon: "scissors", label: "Split Pagine", command: "dividi pagine pdf", tint: .red)
             ]
