@@ -125,6 +125,7 @@ Ogni operazione crea una `Transaction` che traccia:
 - [x] **Smart Multi-File Resolution**: Risolzione automatica di tutti i file selezionati in Finder. ✅
 
 ### 🔴 Da Fare Futuro
+- [ ] **Funzioni Complesse & Pipeline Multi-Plugin**: Esecuzione di workflow complessi in sequenza diretta tra formati diversi (es. *"prendi tutte le immagini selezionate e mettile in un unico PDF"*, *"estrai l'audio da tutti i video e comprimili in uno ZIP"*).
 - [ ] **Native Tool Calling / Function Calling**: Supporto della specifica OpenAI `tools`/`functions` invece dell'output JSON via prompt.
 - [ ] **Shortcut Tastiera Personalizzabile**: Consentire all'utente di cambiare la scorciatoia di attivazione (oggi fissa su `⌥ Space`).
 - [ ] **Plugin SDK Pubblico & Homebrew Cask**: Struttura modulare per plugin di terze parti e pacchetto di distribuzione.
