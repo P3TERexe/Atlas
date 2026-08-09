@@ -1,4 +1,5 @@
 import SwiftUI
+@preconcurrency import KeyboardShortcuts
 
 // MARK: - Reusable Provider Section (Collapsible)
 
@@ -136,12 +137,18 @@ struct SettingsView: View {
             // MARK: - Tab Provider AI
             Form {
                 // MARK: Window Style — compact toggle
-                Section("Finestra") {
-                    Picker("Tipo", selection: $settings.useStandardWindow) {
+                Section("Finestra & Scorciatoia") {
+                    Picker("Tipo Finestra", selection: $settings.useStandardWindow) {
                         Text("Overlay HUD").tag(false)
                         Text("Finestra Standard").tag(true)
                     }
                     .pickerStyle(.radioGroup)
+                    
+                    HStack {
+                        Text("Scorciatoia di attivazione")
+                        Spacer()
+                        KeyboardShortcuts.Recorder(for: .toggleOverlay)
+                    }
                 }
                 
                 Section("Pensiero AI") {

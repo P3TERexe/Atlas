@@ -119,12 +119,11 @@ Ogni operazione crea una `Transaction` che traccia:
 - [x] **Barra di Progresso Granulare in Tempo Reale**: Percentuale numerica esatta, animazione fluida ed etichetta del singolo file in lavorazione (`⚙️ Elaborazione 4/10: foto_4.png`). ✅
 - [x] **Visualizzazione Comandi Lunghi Multi-Linea**: Text wrapping completo nell'anteprima per ispezionare integralmente qualsiasi comando terminale generato. ✅
 - [x] **Stile Finestra Personalizzabile**: Opzione per scegliere tra Finestra macOS Standard e Panel Overlay HUD nelle Impostazioni. ✅
-- [x] **Dettaglio Comando da Terminale in Cronologia (Tasto 'i')**: Nella vista Cronologia (Cmd+H), aggiunto un pulsante info ('i') su ciascun elemento per visualizzare nel dettaglio l'esatto comando/step da terminale eseguito. ✅
+- [x] **Shortcut Tastiera Personalizzabile**: Consentire all'utente di cambiare la scorciatoia di attivazione globale nelle Impostazioni (tramite `KeyboardShortcuts.Recorder`). ✅
 - [x] **Redesign completo dell'interfaccia UI**: De-clutter visivo, barra input minimalista, menu `⋯` compatto, banner contesto auto-espandibile e provider nelle impostazioni a sezioni fisarmonica (`ProviderSection`). ✅
 
-### 🔴 Da Fare Futuro
+### 🔴 Da Fare Futuro (Backend & SDK)
 - [ ] **Native Tool Calling / Function Calling**: Supporto della specifica OpenAI `tools`/`functions` invece dell'output JSON via prompt.
-- [ ] **Shortcut Tastiera Personalizzabile**: Consentire all'utente di cambiare la scorciatoia di attivazione (oggi fissa su `⌥ Space`).
 - [ ] **Plugin SDK Pubblico & Homebrew Cask**: Struttura modulare per plugin di terze parti e pacchetto di distribuzione.
 - [ ] **Riconoscimento Immagini Nativo Apple per Rinomina File**: Attualmente la rinomina basata sul contenuto delle immagini funziona soltanto tramite OCR (`image.ocrRename` / `VNRecognizeTextRequest`). Indagare se è possibile estenderla al riconoscimento degli oggetti e della scena nativo di Apple (`VNClassifyImageRequest`) per rinominare automaticamente i file in base a ciò che raffigurano.
 

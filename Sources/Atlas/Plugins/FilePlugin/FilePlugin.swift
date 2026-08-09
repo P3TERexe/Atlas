@@ -274,6 +274,76 @@ final class CompressFilesAction: ActionExecutor {
 
 // MARK: - Select Files in Finder
 
+/// Seleziona file nel Finder in modo sicuro anche con liste molto grandi
+/// (migliaia di elementi): l'API `activateFileViewerSelecting` va in crash
+/// quando l'array di URL è enorme, quindi per le liste grandi si usa
+/// AppleScript (`set selection of front window`), che regge migliaia di voci.
+enum FinderSelector {
+    /// Soglia oltre la quale si usa AppleScript invece dell'API nativa.
+    private static let scriptThreshold = 100
+    
+    static func select(urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        
+        let groups = Dictionary(grouping: urls, by: { $0.deletingLastPathComponent() })
+        for (_, group) in groups {
+            let sorted = group.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            if sorted.count > scriptThreshold {
+                await selectViaScript(files: sorted)
+            } else {
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting(sorted)
+                }
+            }
+        }
+    }
+    
+    private static func selectViaScript(files: [URL]) async {
+        guard let directory = files.first?.deletingLastPathComponent() else { return }
+        let script = buildSelectScript(directory: directory, files: files)
+        _ = try? await AsyncProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+            arguments: [],
+            stdin: Data(script.utf8),
+            timeout: 120
+        )
+    }
+    
+    private static func buildSelectScript(directory: URL, files: [URL]) -> String {
+        let paths = files
+            .map { appleScriptLiteral($0.path) }
+            .joined(separator: ", ")
+        return """
+        tell application "Finder"
+            activate
+            set theTarget to POSIX file \(appleScriptLiteral(directory.path)) as alias
+            set theItems to {}
+            repeat with thePath in {\(paths)}
+                try
+                    set end of theItems to (POSIX file thePath as alias)
+                end try
+            end repeat
+            if (count of Finder windows) > 0 then
+                set target of front window to theTarget
+            else
+                set theWindow to make new Finder window
+                set target of theWindow to theTarget
+            end if
+            if (count of theItems) > 0 then
+                set selection of front window to theItems
+            end if
+        end tell
+        """
+    }
+    
+    private static func appleScriptLiteral(_ string: String) -> String {
+        let escaped = string
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+}
+
 final class SelectFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
         guard let currentDirectory = context.currentDirectory else {
@@ -302,14 +372,13 @@ final class SelectFilesAction: ActionExecutor {
             return ActionResult(success: true, outputFiles: [], message: "Nessun file trovato da selezionare.")
         }
         
-        // Select & highlight files in Finder
-        await MainActor.run {
-            NSWorkspace.shared.activateFileViewerSelecting(targetFiles)
-        }
+        // La selezione non crea file: outputFiles vuoto per evitare migliaia di
+        // righe in OutputFilesView e l'API nativa che crasha con liste enormi.
+        await FinderSelector.select(urls: targetFiles)
         
         return ActionResult(
             success: true,
-            outputFiles: targetFiles,
+            outputFiles: [],
             message: "Selezionati \(targetFiles.count) file nel Finder"
         )
     }

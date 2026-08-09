@@ -582,11 +582,18 @@ struct OutputFilesView: View {
             
             Divider()
             
-            // File list
+            // File list (capped: migliaia di righe con icone NSImage
+            // appesantiscono o bloccano l'UI, es. selezionando tutte le foto)
             ScrollView {
                 VStack(spacing: 4) {
-                    ForEach(transaction.createdURLs, id: \.self) { url in
+                    ForEach(Array(transaction.createdURLs.prefix(200)), id: \.self) { url in
                         OutputFileRow(url: url)
+                    }
+                    if transaction.createdURLs.count > 200 {
+                        Text("… e altri \(transaction.createdURLs.count - 200) file")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 4)
                     }
                 }
                 .padding(10)
