@@ -82,8 +82,17 @@ final class CalcShellAction: ActionExecutor {
 
 final class GenericShellAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        guard step.format != nil || !step.inputs.isEmpty else {
+        let cmd = step.format ?? step.inputs.joined(separator: " ")
+        guard !cmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExecutorError.validationFailed("Comando shell non specificato.")
+        }
+        
+        let lower = cmd.lowercased()
+        let forbidden = ["sudo ", "rm -rf /", "rm -rf ~", "rm -rf *", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"]
+        for bad in forbidden {
+            if lower.contains(bad) {
+                throw ExecutorError.validationFailed("Comando bloccato per la tua sicurezza: l'esecuzione di '\(bad.trimmingCharacters(in: .whitespaces))' non è consentita da Atlas.")
+            }
         }
     }
     

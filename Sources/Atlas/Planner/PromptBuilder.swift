@@ -69,6 +69,7 @@ class PromptBuilder {
         3. For multi-step operations, use "dependsOn" to reference the step IDs that must complete first.
         4. If the user request is to SELECT or HIGHLIGHT files (e.g. "seleziona le immagini"), use ONLY 'file.select'. DO NOT convert, rename, or modify the files!
         5. If the user asks to COMPRESS photos or images (e.g. "comprimi foto", "comprimi le immagini"), use ONLY 'file.zip' to create a ZIP archive. DO NOT perform lossy image conversions or resizing unless explicitly asked for quality reduction or format change!
+        6. FOR ANY CUSTOM REQUEST that does not fit a dedicated tool (e.g. creating directories, searching text, downloading via curl, counting lines/words, running custom scripts), use tool 'shell.run' and put the exact zsh command line in 'format'.
         """
         
         return prompt
@@ -113,7 +114,8 @@ class PromptBuilder {
         2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.).
         3. Set 'grayscale': true for Black & White.
         4. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
-        5. For "comprimi foto/immagini" (compress photos), use ONLY 'file.zip'! DO NOT convert image formats unless quality/format is requested.
+        5. For "comprimi foto/immagini" (compress photos), use ONLY 'file.zip'!
+        6. For ANY custom/generic request without a specific tool, use tool 'shell.run' and set 'format' to the zsh command line.
         """
     }
 }
