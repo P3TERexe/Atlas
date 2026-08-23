@@ -148,10 +148,7 @@ final class RenameFilesAction: ActionExecutor {
         var renamedFiles: [URL] = []
         var backupURLs: [URL: URL] = [:]
         
-        let backupDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AtlasBackups")
-            .appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        let backupDir = try BackupStore.newBackupDirectory()
         
         for (index, file) in files.enumerated() {
             let numberString = String(index + 1)
@@ -161,14 +158,26 @@ final class RenameFilesAction: ActionExecutor {
             let newFileName = ext.isEmpty ? newBaseName : "\(newBaseName).\(ext)"
             let targetURL = directory.appendingPathComponent(newFileName)
             
+            // 1. Back up the SOURCE keyed by its original path so the rollback
+            //    restores it (rename-undo = recreate source; the moved file is
+            //    tracked as a created output and deleted by the rollback).
             let backupURL = backupDir.appendingPathComponent(file.lastPathComponent)
             try FileManager.default.copyItem(at: file, to: backupURL)
-            backupURLs[targetURL] = backupURL
+            if file.path != targetURL.path {
+                backupURLs[file] = backupURL
+            }
+            
+            // 2. If an existing file would be overwritten, back THAT up too:
+            //    after rollback deletes the renamed output, the original target
+            //    is restored from this backup (no data loss).
+            if file.path != targetURL.path, FileManager.default.fileExists(atPath: targetURL.path) {
+                let targetBackup = backupDir.appendingPathComponent("overwritten_" + targetURL.lastPathComponent)
+                try FileManager.default.copyItem(at: targetURL, to: targetBackup)
+                backupURLs[targetURL] = targetBackup
+                try FileManager.default.removeItem(at: targetURL)
+            }
             
             if file.path != targetURL.path {
-                if FileManager.default.fileExists(atPath: targetURL.path) {
-                    try FileManager.default.removeItem(at: targetURL)
-                }
                 try FileManager.default.moveItem(at: file, to: targetURL)
             }
             renamedFiles.append(targetURL)
@@ -283,14 +292,20 @@ enum FinderSelector {
     private static let scriptThreshold = 100
     
     static func select(urls: [URL]) async {
-        guard !urls.isEmpty else { return }
+        guard !urls.isEmpty else {
+            print("[Atlas][Select] ⚠️ 0 URL ricevuti — nessuna selezione")
+            return
+        }
+        print("[Atlas][Select] ▶ select start urls=\(urls.count) first=\(urls.first?.path ?? "?")")
         
         let groups = Dictionary(grouping: urls, by: { $0.deletingLastPathComponent() })
         for (_, group) in groups {
             let sorted = group.sorted { $0.lastPathComponent < $1.lastPathComponent }
             if sorted.count > scriptThreshold {
+                print("[Atlas][Select] → AppleScript path (files=\(sorted.count) > \(scriptThreshold))")
                 await selectViaScript(files: sorted)
             } else {
+                print("[Atlas][Select] → native activateFileViewerSelecting (files=\(sorted.count) ≤ \(scriptThreshold))")
                 await MainActor.run {
                     NSWorkspace.shared.activateFileViewerSelecting(sorted)
                 }
@@ -301,12 +316,19 @@ enum FinderSelector {
     private static func selectViaScript(files: [URL]) async {
         guard let directory = files.first?.deletingLastPathComponent() else { return }
         let script = buildSelectScript(directory: directory, files: files)
-        _ = try? await AsyncProcessRunner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-            arguments: [],
-            stdin: Data(script.utf8),
-            timeout: 120
-        )
+        let started = Date()
+        do {
+            let result = try await AsyncProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: [],
+                stdin: Data(script.utf8),
+                timeout: 120
+            )
+            let elapsed = Date().timeIntervalSince(started)
+            print("[Atlas][Select] osascript exit=\(result.exitCode) time=\(String(format: "%.1f", elapsed))s stdout=\(result.stdout.count)B stderr=\(result.stderr.prefix(300))")
+        } catch {
+            print("[Atlas][Select] ❌ osascript error: \(error.localizedDescription) after \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+        }
     }
     
     static func buildSelectScript(directory: URL, files: [URL]) -> String {
@@ -370,7 +392,9 @@ final class SelectFilesAction: ActionExecutor {
         }
         
         let targetFiles = resolveTargetFiles(step: step, directory: currentDirectory)
+        print("[Atlas][Select] execute dir=\(currentDirectory.path) targetFiles=\(targetFiles.count) inputs=\(step.inputs.count) format=\(step.format ?? "nil")")
         guard !targetFiles.isEmpty else {
+            print("[Atlas][Select] ⚠️ 0 file risolti — selezione vuota")
             return ActionResult(success: true, outputFiles: [], message: "Nessun file trovato da selezionare.")
         }
         

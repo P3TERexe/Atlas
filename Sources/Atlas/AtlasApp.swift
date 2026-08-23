@@ -33,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var overlayWindowController: OverlayWindowController?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        BackupStore.prune()
         NSApp.setActivationPolicy(.accessory)
         
         overlayWindowController = OverlayWindowController()
