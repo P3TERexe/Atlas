@@ -204,7 +204,16 @@ final class ZipFilesAction: ActionExecutor {
         guard let directory = context.currentDirectory, !files.isEmpty else { return nil }
         let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ".zip", with: "") ?? "archive"
         let archiveURL = FileResolver.uniqueURL(in: directory, baseName: rawName, extensionName: "zip")
-        return ["cd \(directory.path) && zip -r \(archiveURL.lastPathComponent) \(files.map { $0.lastPathComponent }.joined(separator: " "))"]
+        // La stringa è solo anteprima, ma deve restare un comando zsh valido:
+        // spazi/apici/metacaratteri nei nomi file vanno quotati.
+        let quotedFiles = files.map { Self.shellQuote($0.lastPathComponent) }.joined(separator: " ")
+        return ["cd \(Self.shellQuote(directory.path)) && zip -r \(Self.shellQuote(archiveURL.lastPathComponent)) \(quotedFiles)"]
+    }
+
+    /// Quoting per shell POSIX: singoli apici con escape del carattere '.
+    /// Visibile per il testing (internal).
+    static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
     
     func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
