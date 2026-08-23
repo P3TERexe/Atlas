@@ -69,15 +69,15 @@ struct RiskAssessment {
             switch step.tool {
             case "file.rename":
                 maxRisk = .high
-                for input in step.inputs {
-                    let fileURL = dir.appendingPathComponent(input)
+                // Use the same resolver as the executor so the preview matches
+                // what will actually be touched (selection, directories, etc.).
+                for fileURL in FileResolver.resolveInputURLs(step: step, context: context) {
                     items.append(PredictedFileItem(url: fileURL, action: .modify, reason: "Rinominato secondo template '\(step.format ?? "")'"))
                 }
                 
             case "file.trash":
                 maxRisk = .high
-                for input in step.inputs {
-                    let fileURL = dir.appendingPathComponent(input)
+                for fileURL in FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true) {
                     items.append(PredictedFileItem(url: fileURL, action: .delete, reason: "Spostamento nel Cestino di macOS"))
                 }
                 
@@ -155,13 +155,17 @@ struct RiskAssessment {
                 break
                 
             case "shell.run":
-                maxRisk = .high
+                let cmd = step.format ?? step.inputs.joined(separator: " ")
+                // Downgrade conservativo: .medium solo se tutti i leader del
+                // comando sono non-distruttivi e non ci sono redirezioni;
+                // altrimenti resta .high. La reason continua a includere il
+                // comando integrale per trasparenza UI.
+                maxRisk = ShellGuard.classify(cmd) ? .medium : .high
                 items.append(PredictedFileItem(
                     url: dir.appendingPathComponent("(comando shell)"),
                     action: .modify,
-                    reason: "Esegue un comando shell arbitrario: \(step.format ?? step.inputs.joined(separator: " "))"
+                    reason: "Esegue un comando shell arbitrario: \(cmd)"
                 ))
-                
             default:
                 maxRisk = max(maxRisk, .medium)
                 items.append(PredictedFileItem(
