@@ -18,6 +18,11 @@ typealias ItemProgressCallback = @Sendable (_ itemIndex: Int, _ totalItems: Int,
 
 protocol ActionExecutor: Sendable {
     func validate(step: ActionStep, context: FinderContext) throws
+    /// Entrambe le forme sono requisiti: i default nell'estensione si girano
+    /// le richieste l'un l'altro, ma il witness concreto di ogni executor che
+    /// implementi almeno una delle due forme ha sempre precedenza, quindi il
+    /// ciclo è irraggiungibile.
+    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult
     func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]?
 }

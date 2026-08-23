@@ -66,9 +66,18 @@ struct ActionGraph: Codable, Sendable, Generable {
     /// Topologically sorts the steps by their `dependsOn` constraints
     /// (Kahn's algorithm). Throws on unknown dependencies or cycles.
     func topologicallySorted() throws -> ActionGraph {
+        // Difensiva: id duplicati renderebbero ambiguo il grafo (e farebbero
+        // crashare Dictionary(uniqueKeysWithValues:) più sotto).
+        var seenIDs = Set<String>()
+        for step in steps {
+            guard seenIDs.insert(step.id).inserted else {
+                throw ExecutorError.validationFailed("ID passo duplicato: \(step.id)")
+            }
+        }
+
         var inDegree: [String: Int] = [:]
         var edges: [String: [String]] = [:]
-        
+
         for step in steps {
             inDegree[step.id] = 0
         }
