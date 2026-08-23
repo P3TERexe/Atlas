@@ -65,8 +65,10 @@ class Planner {
         if let instantGraph = InstantActionParser.parse(query: query, context: context) {
             lastPrompt = "[INSTANT LOCAL PARSER (0ms)]"
             lastResponse = "⚡ Piano locale istantaneo generato (0ms)"
+            print("[Atlas][Planner] ⚡ instant parser hit: tool=\(instantGraph.steps.first?.tool ?? "?") inputs=\(instantGraph.steps.first?.inputs.count ?? 0)")
             return instantGraph
         }
+        print("[Atlas][Planner] ⚡ instant parser MISS → LLM path (visibleFiles=\(context.visibleFiles.count) selected=\(context.selectedFiles.count) dir=\(context.currentDirectory?.path ?? "nil"))")
         
         let rawComplexity = Self.analyzeComplexity(query: query)
         let isComplex = AppSettings.shared.disableThinking ? false : rawComplexity.isComplex
@@ -79,21 +81,22 @@ class Planner {
         lastResponse = nil
         
         let settings = AppSettings.shared
+        let toolIds = ToolRegistry.shared.allToolIds
         let provider: any ModelProvider = switch activeProvider {
         case .apple:
             AppleModelProvider()
         case .opencode:
-            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel)
+            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel, toolIds: toolIds)
         case .ollama:
-            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel)
+            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel, toolIds: toolIds)
         case .openai:
-            OpenAIModelProvider(apiKey: settings.openAIApiKey)
+            OpenAIModelProvider(apiKey: settings.openAIApiKey, toolIds: toolIds)
         case .claude:
-            ClaudeModelProvider(apiKey: settings.claudeApiKey)
+            ClaudeModelProvider(apiKey: settings.claudeApiKey, toolIds: toolIds)
         case .nvidia:
-            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel)
+            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: toolIds)
         case .openaiCompatible:
-            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey)
+            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds)
         }
         
         // Attempt 1: Standard generation

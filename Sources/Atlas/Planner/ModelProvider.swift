@@ -89,6 +89,70 @@ enum ActionGraphParser {
     }
 }
 
+// MARK: - Shared structured-response parsing
+
+/// Estrae l'ActionGraph dai payload strutturati nativi (tool calling), con
+/// fallback sul parsing del testo libero esistente quando il modello non
+/// emette una tool call. Il decode malformato fallisce senza retry
+/// (`decodingFailed`): il retry resta appannaggio della validazione in Planner.
+enum PlanResponseParser {
+    /// Messaggio OpenAI-style (`choices[0].message`): prima
+    /// `tool_calls[*].function.arguments` (stringa JSON), poi `content`.
+    static func parseOpenAIMessage(_ message: [String: Any]) throws -> ActionGraph {
+        if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+            for call in toolCalls {
+                guard let function = call["function"] as? [String: Any],
+                      function["name"] as? String == PlanToolSchema.functionName,
+                      let arguments = function["arguments"] as? String else { continue }
+                return try decodeGraph(arguments, source: "tool arguments")
+            }
+        }
+
+        guard let content = message["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw PlannerError.invalidResponse
+        }
+        return try ActionGraphParser.parse(content)
+    }
+
+    /// Blocchi di contenuto Anthropic: primo block `tool_use` di `submit_plan`
+    /// → `input`; altrimenti concat dei text blocks → parser leniente.
+    static func parseClaudeContent(_ blocks: [[String: Any]]) throws -> ActionGraph {
+        for block in blocks where block["type"] as? String == "tool_use" {
+            guard let name = block["name"] as? String,
+                  name == PlanToolSchema.functionName,
+                  let input = block["input"] else { continue }
+            guard JSONSerialization.isValidJSONObject([input]),
+                  let data = try? JSONSerialization.data(withJSONObject: input) else {
+                throw PlannerError.decodingFailed("Input della tool use non serializzabile")
+            }
+            do {
+                return try JSONDecoder().decode(ActionGraph.self, from: data)
+            } catch {
+                throw PlannerError.decodingFailed("Input tool_use non decodificabile come piano: \(error.localizedDescription)")
+            }
+        }
+
+        let text = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw PlannerError.invalidResponse
+        }
+        return try ActionGraphParser.parse(text)
+    }
+
+
+    private static func decodeGraph(_ json: String, source: String) throws -> ActionGraph {
+        guard let data = json.data(using: .utf8) else {
+            throw PlannerError.decodingFailed("\(source) non validi come UTF-8")
+        }
+        do {
+            return try JSONDecoder().decode(ActionGraph.self, from: data)
+        } catch {
+            throw PlannerError.decodingFailed("\(source) non decodificabili come ActionGraph: \(error.localizedDescription)")
+        }
+    }
+}
+
 // MARK: - Apple Foundation Models Provider (DEFAULT)
 
 struct AppleModelProvider: ModelProvider {
@@ -123,13 +187,20 @@ struct AppleModelProvider: ModelProvider {
 struct OllamaModelProvider: ModelProvider {
     var endpoint: String
     var model: String
-    
-    init(endpoint: String, model: String) {
+    /// ID dei tool registrati; vuoto = `format:"json"` (payload legacy).
+    var toolIds: [String] = []
+
+    init(endpoint: String, model: String, toolIds: [String] = []) {
         self.endpoint = endpoint
         self.model = model
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso storico (`format:"json"`); con lo schema diventa un
+    /// oggetto (structured outputs nativi, Ollama ≥0.5).
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
         var options: [String: Any] = [
             "temperature": 0.0,
             "num_predict": isComplex ? 3500 : 1200
@@ -137,37 +208,81 @@ struct OllamaModelProvider: ModelProvider {
         if !isComplex {
             options["thinking"] = false
         }
-        
-        let requestBody: [String: Any] = [
+
+        let format: Any = toolParameters ?? "json"
+
+        return [
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "format": "json",
+            "format": format,
             "options": options
         ]
-        
+    }
+
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        let structuredSchema: [String: Any]? = toolIds.isEmpty
+            ? nil
+            : PlanToolSchema.parametersJSON(toolIds: toolIds)
+
+        func run(_ schema: [String: Any]?) async throws -> ActionGraph {
+            let text = try await generateText(prompt: prompt, isComplex: isComplex, toolParameters: schema)
+            return try ActionGraphParser.parse(text)
+        }
+
+        guard let structured = structuredSchema else {
+            return try await run(nil)
+        }
+
+        do {
+            return try await run(structured)
+        } catch PlannerError.decodingFailed {
+            // Fallback unico (coerente col budget retry attuale): formato
+            // JSON semplice e prompt originale, poi eventuale errore propagato.
+            return try await run(nil)
+        }
+    }
+
+    /// Esegue /api/generate e ritorna il testo di risposta. Se il server
+    /// rifiuta lo schema strutturato (HTTP 4xx, Ollama <0.5) riprova una
+    /// volta sola con `format:"json"`.
+    private func generateText(prompt: String, isComplex: Bool, toolParameters: [String: Any]?) async throws -> String {
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: model,
+            toolParameters: toolParameters
+        )
+
         guard let url = URL(string: endpoint) else {
             throw PlannerError.llmError("Endpoint Ollama non valido: \(endpoint)")
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
+        if toolParameters != nil,
+           let httpResponse = response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            // Endpoint senza structured outputs: degrade a format json.
+            return try await generateText(prompt: prompt, isComplex: isComplex, toolParameters: nil)
+        }
+
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw PlannerError.llmError("Impossibile raggiungere Ollama su \(endpoint). Assicurati che sia in esecuzione.")
         }
-        
+
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let responseText = jsonObject["response"] as? String else {
             throw PlannerError.invalidResponse
         }
-        
-        return try ActionGraphParser.parse(responseText)
+
+        return responseText
     }
 }
 
@@ -176,16 +291,18 @@ struct OllamaModelProvider: ModelProvider {
 struct OpenAIModelProvider: ModelProvider {
     var apiKey: String
     var model: String = "gpt-4o-mini"
-    
-    init(apiKey: String) {
+    /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
+    var toolIds: [String] = []
+
+    init(apiKey: String, toolIds: [String] = []) {
         self.apiKey = apiKey
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        guard !apiKey.isEmpty else {
-            throw PlannerError.llmError("OpenAI non configurato. Imposta la tua API key nelle impostazioni.")
-        }
-        
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso prompt-JSON storico.
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -196,19 +313,43 @@ struct OpenAIModelProvider: ModelProvider {
                 "content": prompt
             ]
         ]
-        
-        var requestBody: [String: Any] = [
+
+        var body: [String: Any] = [
             "model": model,
             "messages": messages,
-            "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": isComplex ? 3500 : 1200
+            "max_tokens": isComplex ? 3500 : 1200,
+            "reasoning_effort": isComplex ? "medium" : "low"
         ]
-        if isComplex {
-            requestBody["reasoning_effort"] = "medium"
+        if let params = toolParameters {
+            // Tool calling attivo: response_format json_object è ridondante e
+            // alcuni endpoint rifiutano la combinazione.
+            body["tools"] = [[
+                "type": "function",
+                "function": [
+                    "name": PlanToolSchema.functionName,
+                    "description": PlanToolSchema.description,
+                    "parameters": params
+                ]
+            ]]
+            body["tool_choice"] = ["type": "function", "function": ["name": PlanToolSchema.functionName]]
         } else {
-            requestBody["reasoning_effort"] = "low"
+            body["response_format"] = ["type": "json_object"]
         }
+        return body
+    }
+
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        guard !apiKey.isEmpty else {
+            throw PlannerError.llmError("OpenAI non configurato. Imposta la tua API key nelle impostazioni.")
+        }
+
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: model,
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+        )
         
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
             throw PlannerError.llmError("URL OpenAI non valido")
@@ -235,12 +376,11 @@ struct OpenAIModelProvider: ModelProvider {
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = jsonObject["choices"] as? [[String: Any]],
               let first = choices.first,
-              let message = first["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let message = first["message"] as? [String: Any] else {
             throw PlannerError.invalidResponse
         }
-        
-        return try ActionGraphParser.parse(content)
+
+        return try PlanResponseParser.parseOpenAIMessage(message)
     }
 }
 
@@ -249,17 +389,19 @@ struct OpenAIModelProvider: ModelProvider {
 struct ClaudeModelProvider: ModelProvider {
     var apiKey: String
     var model: String = "claude-sonnet-4-5"
-    
-    init(apiKey: String) {
+    /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
+    var toolIds: [String] = []
+
+    init(apiKey: String, toolIds: [String] = []) {
         self.apiKey = apiKey
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        guard !apiKey.isEmpty else {
-            throw PlannerError.llmError("Claude non configurato. Imposta la tua API key nelle impostazioni.")
-        }
-        
-        let requestBody: [String: Any] = [
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso prompt-JSON storico.
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": isComplex ? 3500 : 1200,
             "temperature": 0.0,
@@ -268,6 +410,30 @@ struct ClaudeModelProvider: ModelProvider {
                 ["role": "user", "content": prompt]
             ]
         ]
+        if let params = toolParameters {
+            // Anthropic: tools e tool_choice top-level (non dentro messages).
+            body["tools"] = [[
+                "name": PlanToolSchema.functionName,
+                "description": PlanToolSchema.description,
+                "input_schema": params
+            ]]
+            body["tool_choice"] = ["type": "tool", "name": PlanToolSchema.functionName]
+        }
+        return body
+    }
+
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        guard !apiKey.isEmpty else {
+            throw PlannerError.llmError("Claude non configurato. Imposta la tua API key nelle impostazioni.")
+        }
+
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: model,
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+        )
+
         
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw PlannerError.llmError("URL Anthropic non valido")
@@ -277,8 +443,8 @@ struct ClaudeModelProvider: ModelProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = httpRequestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("anthropic-version=2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -293,13 +459,11 @@ struct ClaudeModelProvider: ModelProvider {
         }
         
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let contentArray = jsonObject["content"] as? [[String: Any]],
-              let first = contentArray.first,
-              let text = first["text"] as? String else {
+              let contentArray = jsonObject["content"] as? [[String: Any]] else {
             throw PlannerError.invalidResponse
         }
-        
-        return try ActionGraphParser.parse(text)
+
+        return try PlanResponseParser.parseClaudeContent(contentArray)
     }
 }
 
@@ -308,21 +472,23 @@ struct ClaudeModelProvider: ModelProvider {
 struct NvidiaModelProvider: ModelProvider {
     var apiKey: String
     var model: String
-    
-    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct") {
+    /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
+    var toolIds: [String] = []
+
+    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct", toolIds: [String] = []) {
         self.apiKey = apiKey
         if model.isEmpty || model.contains("deepseek-v4-flash") {
             self.model = "meta/llama-3.3-70b-instruct"
         } else {
             self.model = model
         }
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        guard !apiKey.isEmpty else {
-            throw PlannerError.llmError("NVIDIA Build non configurato. Imposta la tua API key nelle impostazioni.")
-        }
-        
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso prompt-JSON storico.
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -333,16 +499,43 @@ struct NvidiaModelProvider: ModelProvider {
                 "content": prompt
             ]
         ]
-        
-        var requestBody: [String: Any] = [
+
+        var body: [String: Any] = [
             "model": model,
             "messages": messages,
             "temperature": 0.0,
             "max_tokens": isComplex ? 3500 : 1200
         ]
         if !isComplex {
-            requestBody["thinking"] = ["type": "disabled"]
+            body["thinking"] = ["type": "disabled"]
         }
+        if let params = toolParameters {
+            body["tools"] = [[
+                "type": "function",
+                "function": [
+                    "name": PlanToolSchema.functionName,
+                    "description": PlanToolSchema.description,
+                    "parameters": params
+                ]
+            ]]
+            body["tool_choice"] = ["type": "function", "function": ["name": PlanToolSchema.functionName]]
+        }
+        return body
+    }
+    
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        guard !apiKey.isEmpty else {
+            throw PlannerError.llmError("NVIDIA Build non configurato. Imposta la tua API key nelle impostazioni.")
+        }
+        
+
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: model,
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+        )
+
         
         guard let url = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions") else {
             throw PlannerError.llmError("URL NVIDIA Build non valido")
@@ -385,12 +578,11 @@ struct NvidiaModelProvider: ModelProvider {
                 guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let choices = jsonObject["choices"] as? [[String: Any]],
                       let first = choices.first,
-                      let message = first["message"] as? [String: Any],
-                      let content = message["content"] as? String else {
+                      let message = first["message"] as? [String: Any] else {
                     throw PlannerError.invalidResponse
                 }
-                
-                return try ActionGraphParser.parse(content)
+
+                return try PlanResponseParser.parseOpenAIMessage(message)
             } catch {
                 lastError = error
                 if attempts < maxAttempts && !(error is PlannerError) {
@@ -410,30 +602,20 @@ struct OpenAICompatibleModelProvider: ModelProvider {
     var baseURL: String
     var model: String
     var apiKey: String
-    
-    init(baseURL: String, model: String, apiKey: String) {
+    /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
+    var toolIds: [String] = []
+
+    init(baseURL: String, model: String, apiKey: String, toolIds: [String] = []) {
         self.baseURL = baseURL
         self.model = model
         self.apiKey = apiKey
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        guard !baseURL.isEmpty else {
-            throw PlannerError.llmError("Provider custom non configurato. Imposta il Base URL nelle impostazioni.")
-        }
-        
-        let activeModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "local-model" : model
-        
-        // Normalize the base URL: strip trailing slash, ensure we call /chat/completions
-        let normalizedBase = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        let urlString = normalizedBase.hasSuffix("/chat/completions")
-            ? normalizedBase
-            : normalizedBase + "/chat/completions"
-        
-        guard let url = URL(string: urlString) else {
-            throw PlannerError.llmError("Base URL non valido: \(baseURL)")
-        }
-        
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso prompt-JSON storico.
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -459,18 +641,60 @@ struct OpenAICompatibleModelProvider: ModelProvider {
                 "content": prompt
             ]
         ]
-        
-        var requestBody: [String: Any] = [
-            "model": activeModel,
+
+        var body: [String: Any] = [
+            "model": model,
             "messages": messages,
-            "response_format": ["type": "json_object"],
             "temperature": 0.0,
             "max_tokens": isComplex ? 3500 : 1200
         ]
         if !isComplex {
-            requestBody["thinking"] = ["type": "disabled"]
-            requestBody["reasoning_effort"] = "low"
+            body["thinking"] = ["type": "disabled"]
+            body["reasoning_effort"] = "low"
         }
+        if let params = toolParameters {
+            // Tool calling attivo: response_format json_object è ridondante e
+            // alcuni endpoint rifiutano la combinazione.
+            body["tools"] = [[
+                "type": "function",
+                "function": [
+                    "name": PlanToolSchema.functionName,
+                    "description": PlanToolSchema.description,
+                    "parameters": params
+                ]
+            ]]
+            body["tool_choice"] = ["type": "function", "function": ["name": PlanToolSchema.functionName]]
+        } else {
+            body["response_format"] = ["type": "json_object"]
+        }
+        return body
+    }
+    
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        guard !baseURL.isEmpty else {
+            throw PlannerError.llmError("Provider custom non configurato. Imposta il Base URL nelle impostazioni.")
+        }
+        
+        let activeModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "local-model" : model
+        
+        // Normalize the base URL: strip trailing slash, ensure we call /chat/completions
+        let normalizedBase = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        let urlString = normalizedBase.hasSuffix("/chat/completions")
+            ? normalizedBase
+            : normalizedBase + "/chat/completions"
+        
+        guard let url = URL(string: urlString) else {
+            throw PlannerError.llmError("Base URL non valido: \(baseURL)")
+        }
+        
+
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: activeModel,
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+        )
+
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -495,12 +719,11 @@ struct OpenAICompatibleModelProvider: ModelProvider {
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = jsonObject["choices"] as? [[String: Any]],
               let first = choices.first,
-              let message = first["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let message = first["message"] as? [String: Any] else {
             throw PlannerError.invalidResponse
         }
-        
-        return try ActionGraphParser.parse(content)
+
+        return try PlanResponseParser.parseOpenAIMessage(message)
     }
 }
 
@@ -509,22 +732,19 @@ struct OpenAICompatibleModelProvider: ModelProvider {
 struct OpenCodeModelProvider: ModelProvider {
     var apiKey: String
     var model: String
-    
-    init(apiKey: String, model: String = "deepseek-v4-flash-free") {
+    /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
+    var toolIds: [String] = []
+
+    init(apiKey: String, model: String = "deepseek-v4-flash-free", toolIds: [String] = []) {
         self.apiKey = apiKey
         self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "deepseek-v4-flash-free" : model
+        self.toolIds = toolIds
     }
-    
-    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        guard !apiKey.isEmpty else {
-            throw PlannerError.llmError("OpenCode AI non configurato. Inserisci la tua API Key (opencode.ai/auth) nelle impostazioni.")
-        }
-        
-        let urlString = "https://opencode.ai/zen/v1/chat/completions"
-        guard let url = URL(string: urlString) else {
-            throw PlannerError.llmError("URL OpenCode non valido")
-        }
-        
+
+    /// Body-builder testabile. Con `toolParameters == nil` il payload è
+    /// identico al flusso prompt-JSON storico.
+    static func makeBody(prompt: String, isComplex: Bool, model: String,
+                         toolParameters: [String: Any]?) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -549,19 +769,50 @@ struct OpenCodeModelProvider: ModelProvider {
                 "content": prompt
             ]
         ]
-        
-        var requestBody: [String: Any] = [
+
+        var body: [String: Any] = [
             "model": model,
             "messages": messages,
-            "response_format": ["type": "json_object"],
             "temperature": 0.0,
-            "max_tokens": isComplex ? 3500 : 2500
+            "max_tokens": isComplex ? 3500 : 2500,
+            "reasoning_effort": isComplex ? "medium" : "low"
         ]
-        if !isComplex {
-            requestBody["reasoning_effort"] = "low"
+        if let params = toolParameters {
+            // Tool calling attivo: response_format json_object è ridondante e
+            // alcuni endpoint rifiutano la combinazione.
+            body["tools"] = [[
+                "type": "function",
+                "function": [
+                    "name": PlanToolSchema.functionName,
+                    "description": PlanToolSchema.description,
+                    "parameters": params
+                ]
+            ]]
+            body["tool_choice"] = ["type": "function", "function": ["name": PlanToolSchema.functionName]]
         } else {
-            requestBody["reasoning_effort"] = "medium"
+            body["response_format"] = ["type": "json_object"]
         }
+        return body
+    }
+    
+    func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
+        guard !apiKey.isEmpty else {
+            throw PlannerError.llmError("OpenCode AI non configurato. Inserisci la tua API Key (opencode.ai/auth) nelle impostazioni.")
+        }
+        
+        let urlString = "https://opencode.ai/zen/v1/chat/completions"
+        guard let url = URL(string: urlString) else {
+            throw PlannerError.llmError("URL OpenCode non valido")
+        }
+        
+
+        let requestBody = Self.makeBody(
+            prompt: prompt,
+            isComplex: isComplex,
+            model: model,
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+        )
+
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -597,12 +848,15 @@ struct OpenCodeModelProvider: ModelProvider {
             throw PlannerError.decodingFailed("Formato risposta da OpenCode AI non riconosciuto.\n\nTesto grezzo dal server:\n\(rawBody)")
         }
         
-        let rawContent = (message["content"] as? String) ?? (message["reasoning_content"] as? String) ?? ""
-        guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            let rawBody = String(data: data, encoding: .utf8) ?? ""
-            throw PlannerError.decodingFailed("Il modello ha restituito un testo vuoto.\n\nTesto grezzo dal server:\n\(rawBody)")
+        // Il modello Zen può lasciare content vuoto e mettere tutto in
+        // reasoning_content: promuoviamolo prima del parser condiviso.
+        var effectiveMessage = message
+        if message["tool_calls"] == nil,
+           ((message["content"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let reasoning = message["reasoning_content"] as? String {
+            effectiveMessage["content"] = reasoning
         }
-        
-        return try ActionGraphParser.parse(rawContent)
+
+        return try PlanResponseParser.parseOpenAIMessage(effectiveMessage)
     }
 }
