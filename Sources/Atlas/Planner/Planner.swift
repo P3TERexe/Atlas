@@ -1,5 +1,10 @@
 import Foundation
 
+struct QueryComplexity: Sendable {
+    let isComplex: Bool
+    let reason: String?
+}
+
 enum PlannerError: Error, LocalizedError {
     case invalidResponse
     case decodingFailed(String)
@@ -31,20 +36,24 @@ class Planner {
         let lower = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if lower.isEmpty { return QueryComplexity(isComplex: false, reason: nil) }
         
-        let complexKeywords = [
-            "se ", "in base a", "se il file", "condizione", "script",
-            "analizza", "confronta", "ordina per dimensione", "filtra",
-            "se contiene", "estrai testo", "calcola totale", "organizza per data",
-            "se la risoluzione", "solo se", " altrimenti ", "più grande di", "maggiore di"
-        ]
+        // Language-Agnostic Structural Detection:
+        // 1. Multiple clause separators (commas, semicolons, dashes, line breaks)
+        let clauseSeparators = CharacterSet(charactersIn: ",;—–-\n")
+        let clauses = lower.components(separatedBy: clauseSeparators).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         
-        let wordCount = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty }).count
-        let hasComplexKeyword = complexKeywords.contains { lower.contains($0) }
+        // 2. Numerical repetition / count requests in any language (e.g. "7 copies", "10 volte", "3 files", "5x", "100MB")
+        let hasNumberPattern = lower.range(of: "\\b\\d+\\b", options: .regularExpression) != nil
         
-        if hasComplexKeyword || wordCount > 10 {
+        // 3. Multi-word queries with sequence structure or long word count
+        let words = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty })
+        let wordCount = words.count
+        
+        let isMultiClause = clauses.count > 1 || (hasNumberPattern && wordCount > 4)
+        
+        if isMultiClause || wordCount > 15 {
             return QueryComplexity(
                 isComplex: true,
-                reason: "Query articolata con condizioni o regole logiche multiple"
+                reason: "Query multilingua con sequenza di azioni o parametri numerici"
             )
         }
         
@@ -56,10 +65,13 @@ class Planner {
         if let instantGraph = InstantActionParser.parse(query: query, context: context) {
             lastPrompt = "[INSTANT LOCAL PARSER (0ms)]"
             lastResponse = "⚡ Piano locale istantaneo generato (0ms)"
+            print("[Atlas][Planner] ⚡ instant parser hit: tool=\(instantGraph.steps.first?.tool ?? "?") inputs=\(instantGraph.steps.first?.inputs.count ?? 0)")
             return instantGraph
         }
+        print("[Atlas][Planner] ⚡ instant parser MISS → LLM path (visibleFiles=\(context.visibleFiles.count) selected=\(context.selectedFiles.count) dir=\(context.currentDirectory?.path ?? "nil"))")
         
-        let complexity = Self.analyzeComplexity(query: query)
+        let rawComplexity = Self.analyzeComplexity(query: query)
+        let isComplex = AppSettings.shared.disableThinking ? false : rawComplexity.isComplex
         let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
         let initialPrompt = activeRules.isEmpty
             ? promptBuilder.buildCompactPrompt(query: query, context: context)
@@ -69,26 +81,27 @@ class Planner {
         lastResponse = nil
         
         let settings = AppSettings.shared
+        let toolIds = ToolRegistry.shared.allToolIds
         let provider: any ModelProvider = switch activeProvider {
         case .apple:
             AppleModelProvider()
         case .opencode:
-            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel)
+            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel, toolIds: toolIds)
         case .ollama:
-            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel)
+            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel, toolIds: toolIds)
         case .openai:
-            OpenAIModelProvider(apiKey: settings.openAIApiKey)
+            OpenAIModelProvider(apiKey: settings.openAIApiKey, toolIds: toolIds)
         case .claude:
-            ClaudeModelProvider(apiKey: settings.claudeApiKey)
+            ClaudeModelProvider(apiKey: settings.claudeApiKey, toolIds: toolIds)
         case .nvidia:
-            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel)
+            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: toolIds)
         case .openaiCompatible:
-            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey)
+            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds)
         }
         
         // Attempt 1: Standard generation
         do {
-            let graph = try await provider.plan(prompt: initialPrompt, isComplex: complexity.isComplex)
+            let graph = try await provider.plan(prompt: initialPrompt, isComplex: isComplex)
             let sorted = try graph.topologicallySorted()
             
             // Validation Pass 1
@@ -107,7 +120,7 @@ class Planner {
                 """
                 lastPrompt = retryPrompt
                 
-                let secondGraph = try await provider.plan(prompt: retryPrompt, isComplex: complexity.isComplex)
+                let secondGraph = try await provider.plan(prompt: retryPrompt, isComplex: isComplex)
                 let secondSorted = try secondGraph.topologicallySorted()
                 try PlanValidator.validate(graph: secondSorted, query: query, context: context)
                 

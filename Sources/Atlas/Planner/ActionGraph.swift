@@ -66,9 +66,18 @@ struct ActionGraph: Codable, Sendable, Generable {
     /// Topologically sorts the steps by their `dependsOn` constraints
     /// (Kahn's algorithm). Throws on unknown dependencies or cycles.
     func topologicallySorted() throws -> ActionGraph {
+        // Difensiva: id duplicati renderebbero ambiguo il grafo (e farebbero
+        // crashare Dictionary(uniqueKeysWithValues:) più sotto).
+        var seenIDs = Set<String>()
+        for step in steps {
+            guard seenIDs.insert(step.id).inserted else {
+                throw ExecutorError.validationFailed("ID passo duplicato: \(step.id)")
+            }
+        }
+
         var inDegree: [String: Int] = [:]
         var edges: [String: [String]] = [:]
-        
+
         for step in steps {
             inDegree[step.id] = 0
         }
@@ -160,7 +169,37 @@ struct ActionStep: Codable, Sendable, Generable {
         ])
     }
 
-    init(id: String, tool: String, inputs: [String], format: String? = nil,
+    enum CodingKeys: String, CodingKey {
+        case id, tool, inputs, format, grayscale, quality, dependsOn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.tool = try container.decode(String.self, forKey: .tool)
+        
+        if let inputArray = try? container.decode([String].self, forKey: .inputs) {
+            self.inputs = inputArray
+        } else if let singleInput = try? container.decode(String.self, forKey: .inputs) {
+            self.inputs = [singleInput]
+        } else {
+            self.inputs = []
+        }
+        
+        self.format = try? container.decode(String.self, forKey: .format)
+        self.grayscale = try? container.decode(Bool.self, forKey: .grayscale)
+        self.quality = try? container.decode(Int.self, forKey: .quality)
+        
+        if let depArray = try? container.decode([String].self, forKey: .dependsOn) {
+            self.dependsOn = depArray
+        } else if let singleDep = try? container.decode(String.self, forKey: .dependsOn) {
+            self.dependsOn = [singleDep]
+        } else {
+            self.dependsOn = nil
+        }
+    }
+
+    init(id: String, tool: String, inputs: [String] = [], format: String? = nil,
          grayscale: Bool? = nil, quality: Int? = nil, dependsOn: [String]? = nil) {
         self.id = id
         self.tool = tool

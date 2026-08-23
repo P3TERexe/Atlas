@@ -210,42 +210,67 @@ final class ConvertImageAction: ActionExecutor {
     // MARK: - CLI Fallback Engine
     
     private func convertCLIFallback(inputURL: URL, outputURL: URL, format: String, grayscale: Bool) async throws {
-        let cleanFormat = format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let executableURL: URL
-        let arguments: [String]
-        
+        let plan = Self.cliFallbackCommand(
+            inputPath: inputURL.path,
+            outputPath: outputURL.path,
+            cleanFormat: format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            grayscale: grayscale
+        )
+
+        // WebP senza ImageMagick è una garanzia di fallimento: sips non può
+        // codificare WebP. Errore esplicito invece di un tentativo destinato
+        // a fallire con stderr oscurо.
+        if let reason = plan.failureReason {
+            throw ExecutorError.executionFailed(reason)
+        }
+
+        let result = try await AsyncProcessRunner.run(
+            executableURL: URL(fileURLWithPath: plan.executable),
+            arguments: plan.arguments
+        )
+
+        guard result.isSuccess else {
+            throw ExecutorError.executionFailed("Conversione CLI fallita per \(inputURL.lastPathComponent): \(result.stderr)")
+        }
+    }
+
+    /// Puro e iniettabile nei test: decide il comando CLI di fallback o il
+    /// motivo per cui il formato non è convertibile.
+    static func cliFallbackCommand(
+        inputPath: String,
+        outputPath: String,
+        cleanFormat: String,
+        grayscale: Bool,
+        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> (executable: String, arguments: [String], failureReason: String?) {
+        let magickPaths = ["/opt/homebrew/bin/magick", "/usr/local/bin/magick"]
+
         if grayscale || cleanFormat == "webp" {
-            if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/magick") || FileManager.default.fileExists(atPath: "/usr/local/bin/magick") {
-                let bin = FileManager.default.fileExists(atPath: "/opt/homebrew/bin/magick") ? "/opt/homebrew/bin/magick" : "/usr/local/bin/magick"
-                executableURL = URL(fileURLWithPath: bin)
-                var args = [inputURL.path]
+            if let magick = magickPaths.first(where: exists) {
+                var args = [inputPath]
                 if grayscale {
                     args.append(contentsOf: ["-colorspace", "Gray"])
                 }
-                args.append(outputURL.path)
-                arguments = args
-            } else if FileManager.default.fileExists(atPath: "/usr/bin/sips") {
-                executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+                args.append(outputPath)
+                return (magick, args, nil)
+            }
+            // sips NON codifica WebP: errore esplicito, mai tentativo destinato al fallimento.
+            if cleanFormat == "webp" {
+                return ("", [], "La conversione in WebP richiede ImageMagick (non installato su questo Mac).")
+            }
+            if exists("/usr/bin/sips") {
                 var args = ["-s", "format", cleanFormat == "jpg" ? "jpeg" : cleanFormat]
                 if grayscale {
                     args.append(contentsOf: ["-s", "formatOptions", "gray"])
                 }
-                args.append(contentsOf: [inputURL.path, "--out", outputURL.path])
-                arguments = args
-            } else {
-                throw ExecutorError.executionFailed("Impossibile convertire l'immagine su questo Mac.")
+                args.append(contentsOf: [inputPath, "--out", outputPath])
+                return ("/usr/bin/sips", args, nil)
             }
-        } else {
-            let mappedSips = cleanFormat == "jpg" ? "jpeg" : cleanFormat
-            executableURL = URL(fileURLWithPath: "/usr/bin/sips")
-            arguments = ["-s", "format", mappedSips, inputURL.path, "--out", outputURL.path]
+            return ("", [], "Impossibile convertire l'immagine su questo Mac.")
         }
-        
-        let result = try await AsyncProcessRunner.run(executableURL: executableURL, arguments: arguments)
-        
-        guard result.isSuccess else {
-            throw ExecutorError.executionFailed("Conversione CLI fallita per \(inputURL.lastPathComponent): \(result.stderr)")
-        }
+
+        let mappedSips = cleanFormat == "jpg" ? "jpeg" : cleanFormat
+        return ("/usr/bin/sips", ["-s", "format", mappedSips, inputPath, "--out", outputPath], nil)
     }
     
     private func outputExtension(_ rawFormat: String) -> String {
@@ -297,21 +322,33 @@ final class ResizeImageAction: ActionExecutor {
         
         let width = Int(step.format?.replacingOccurrences(of: "px", with: "") ?? "1024") ?? 1024
         var outputFiles: [URL] = []
-        
+        var failures: [String] = []
+
         for inputURL in inputs {
             let baseName = inputURL.deletingPathExtension().lastPathComponent + "_\(width)px"
             let ext = inputURL.pathExtension
             let outputURL = currentDirectory.appendingPathComponent("\(baseName).\(ext)")
-            
+
             let sips = URL(fileURLWithPath: "/usr/bin/sips")
             let args = ["--resampleWidth", "\(width)", inputURL.path, "--out", outputURL.path]
             let result = try await AsyncProcessRunner.run(executableURL: sips, arguments: args)
-            
+
             if result.isSuccess {
                 outputFiles.append(outputURL)
+            } else {
+                failures.append(inputURL.lastPathComponent)
             }
         }
-        
+
+        // Nessuna perdita silenziosa: un file su cui sips fallisce rende
+        // l'azione fallita (transazione registrata come .failed), mai un
+        // messaggio di successo con meno file del previsto.
+        guard failures.isEmpty else {
+            throw ExecutorError.executionFailed(
+                "Ridimensionamento riuscito solo su \(outputFiles.count) di \(inputs.count) immagini. Fallite: \(failures.joined(separator: ", "))"
+            )
+        }
+
         return ActionResult(success: true, outputFiles: outputFiles, message: "Ridimensionate \(outputFiles.count) immagini a \(width)px")
     }
 }
@@ -329,7 +366,7 @@ final class RotateImageAction: ActionExecutor {
         guard let currentDirectory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
-        
+
         let inputs = step.inputs.compactMap { inputPath in
             let url = currentDirectory.appendingPathComponent(inputPath)
             return FileManager.default.fileExists(atPath: url.path) ? url : nil
@@ -337,24 +374,33 @@ final class RotateImageAction: ActionExecutor {
         guard !inputs.isEmpty else {
             return ActionResult(success: true, outputFiles: [], message: "Nessun file trovato per la rotazione.")
         }
-        
+
         let degrees = Int(step.format ?? "90") ?? 90
         var outputFiles: [URL] = []
-        
+        var failures: [String] = []
+
         for inputURL in inputs {
             let baseName = inputURL.deletingPathExtension().lastPathComponent + "_r\(degrees)"
             let ext = inputURL.pathExtension
             let outputURL = currentDirectory.appendingPathComponent("\(baseName).\(ext)")
-            
+
             let sips = URL(fileURLWithPath: "/usr/bin/sips")
             let args = ["--rotate", "\(degrees)", inputURL.path, "--out", outputURL.path]
             let result = try await AsyncProcessRunner.run(executableURL: sips, arguments: args)
-            
+
             if result.isSuccess {
                 outputFiles.append(outputURL)
+            } else {
+                failures.append(inputURL.lastPathComponent)
             }
         }
-        
+
+        guard failures.isEmpty else {
+            throw ExecutorError.executionFailed(
+                "Rotazione riuscita solo su \(outputFiles.count) di \(inputs.count) immagini. Fallite: \(failures.joined(separator: ", "))"
+            )
+        }
+
         return ActionResult(success: true, outputFiles: outputFiles, message: "Ruotate \(outputFiles.count) immagini di \(degrees)°")
     }
 }
@@ -382,21 +428,30 @@ final class ThumbnailImageAction: ActionExecutor {
         }
         
         var outputFiles: [URL] = []
-        
+        var failures: [String] = []
+
         for inputURL in inputs {
             let baseName = inputURL.deletingPathExtension().lastPathComponent + "_thumb"
             let ext = inputURL.pathExtension
             let outputURL = currentDirectory.appendingPathComponent("\(baseName).\(ext)")
-            
+
             let sips = URL(fileURLWithPath: "/usr/bin/sips")
             let args = ["--resampleWidth", "256", inputURL.path, "--out", outputURL.path]
             let result = try await AsyncProcessRunner.run(executableURL: sips, arguments: args)
-            
+
             if result.isSuccess {
                 outputFiles.append(outputURL)
+            } else {
+                failures.append(inputURL.lastPathComponent)
             }
         }
-        
+
+        guard failures.isEmpty else {
+            throw ExecutorError.executionFailed(
+                "Miniature create solo per \(outputFiles.count) di \(inputs.count) immagini. Fallite: \(failures.joined(separator: ", "))"
+            )
+        }
+
         return ActionResult(success: true, outputFiles: outputFiles, message: "Create \(outputFiles.count) miniature (256px)")
     }
 }
@@ -414,7 +469,7 @@ final class StripExifImageAction: ActionExecutor {
         guard let currentDirectory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
-        
+
         let inputs = step.inputs.compactMap { inputPath in
             let url = currentDirectory.appendingPathComponent(inputPath)
             return FileManager.default.fileExists(atPath: url.path) ? url : nil
@@ -422,24 +477,33 @@ final class StripExifImageAction: ActionExecutor {
         guard !inputs.isEmpty else {
             return ActionResult(success: true, outputFiles: [], message: "Nessun file trovato per la pulizia metadati.")
         }
-        
+
         var outputFiles: [URL] = []
-        
+        var failures: [String] = []
+
         for inputURL in inputs {
             let baseName = inputURL.deletingPathExtension().lastPathComponent + "_clean"
             let ext = inputURL.pathExtension
             let outputURL = currentDirectory.appendingPathComponent("\(baseName).\(ext)")
-            
+
             // Native sips re-compression strips EXIF data cleanly without third party tools
             let sips = URL(fileURLWithPath: "/usr/bin/sips")
             let args = ["-s", "format", ext == "png" ? "png" : "jpeg", inputURL.path, "--out", outputURL.path]
             let result = try await AsyncProcessRunner.run(executableURL: sips, arguments: args)
-            
+
             if result.isSuccess {
                 outputFiles.append(outputURL)
+            } else {
+                failures.append(inputURL.lastPathComponent)
             }
         }
-        
+
+        guard failures.isEmpty else {
+            throw ExecutorError.executionFailed(
+                "Metadati rimossi solo da \(outputFiles.count) di \(inputs.count) immagini. Fallite: \(failures.joined(separator: ", "))"
+            )
+        }
+
         return ActionResult(success: true, outputFiles: outputFiles, message: "Rimossi metadati EXIF da \(outputFiles.count) immagini")
     }
 }

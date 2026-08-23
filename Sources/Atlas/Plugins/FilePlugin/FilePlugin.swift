@@ -43,6 +43,13 @@ class FilePlugin: AtlasPlugin {
                 outputFormats: [],
                 executor: TrashFilesAction()
             ),
+            ToolCapability(
+                id: "file.copy",
+                description: "Creates N identical copies of the given file(s) inside a destination folder (default 'copie'). Set 'format' to the copy count (e.g. '7') or 'N;folderName' (e.g. '7;backup') to choose the folder.",
+                inputFormats: [],
+                outputFormats: [],
+                executor: CopyFilesAction()
+            ),
         ]
     }
 }
@@ -141,10 +148,7 @@ final class RenameFilesAction: ActionExecutor {
         var renamedFiles: [URL] = []
         var backupURLs: [URL: URL] = [:]
         
-        let backupDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AtlasBackups")
-            .appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        let backupDir = try BackupStore.newBackupDirectory()
         
         for (index, file) in files.enumerated() {
             let numberString = String(index + 1)
@@ -154,14 +158,26 @@ final class RenameFilesAction: ActionExecutor {
             let newFileName = ext.isEmpty ? newBaseName : "\(newBaseName).\(ext)"
             let targetURL = directory.appendingPathComponent(newFileName)
             
+            // 1. Back up the SOURCE keyed by its original path so the rollback
+            //    restores it (rename-undo = recreate source; the moved file is
+            //    tracked as a created output and deleted by the rollback).
             let backupURL = backupDir.appendingPathComponent(file.lastPathComponent)
             try FileManager.default.copyItem(at: file, to: backupURL)
-            backupURLs[targetURL] = backupURL
+            if file.path != targetURL.path {
+                backupURLs[file] = backupURL
+            }
+            
+            // 2. If an existing file would be overwritten, back THAT up too:
+            //    after rollback deletes the renamed output, the original target
+            //    is restored from this backup (no data loss).
+            if file.path != targetURL.path, FileManager.default.fileExists(atPath: targetURL.path) {
+                let targetBackup = backupDir.appendingPathComponent("overwritten_" + targetURL.lastPathComponent)
+                try FileManager.default.copyItem(at: targetURL, to: targetBackup)
+                backupURLs[targetURL] = targetBackup
+                try FileManager.default.removeItem(at: targetURL)
+            }
             
             if file.path != targetURL.path {
-                if FileManager.default.fileExists(atPath: targetURL.path) {
-                    try FileManager.default.removeItem(at: targetURL)
-                }
                 try FileManager.default.moveItem(at: file, to: targetURL)
             }
             renamedFiles.append(targetURL)
@@ -188,7 +204,16 @@ final class ZipFilesAction: ActionExecutor {
         guard let directory = context.currentDirectory, !files.isEmpty else { return nil }
         let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ".zip", with: "") ?? "archive"
         let archiveURL = FileResolver.uniqueURL(in: directory, baseName: rawName, extensionName: "zip")
-        return ["cd \(directory.path) && zip -r \(archiveURL.lastPathComponent) \(files.map { $0.lastPathComponent }.joined(separator: " "))"]
+        // La stringa è solo anteprima, ma deve restare un comando zsh valido:
+        // spazi/apici/metacaratteri nei nomi file vanno quotati.
+        let quotedFiles = files.map { Self.shellQuote($0.lastPathComponent) }.joined(separator: " ")
+        return ["cd \(Self.shellQuote(directory.path)) && zip -r \(Self.shellQuote(archiveURL.lastPathComponent)) \(quotedFiles)"]
+    }
+
+    /// Quoting per shell POSIX: singoli apici con escape del carattere '.
+    /// Visibile per il testing (internal).
+    static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
     
     func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
@@ -267,6 +292,91 @@ final class CompressFilesAction: ActionExecutor {
 
 // MARK: - Select Files in Finder
 
+/// Seleziona file nel Finder in modo sicuro anche con liste molto grandi
+/// (migliaia di elementi): l'API `activateFileViewerSelecting` va in crash
+/// quando l'array di URL è enorme, quindi per le liste grandi si usa
+/// AppleScript (comando `select`), che regge migliaia di voci.
+enum FinderSelector {
+    /// Soglia oltre la quale si usa AppleScript invece dell'API nativa.
+    private static let scriptThreshold = 100
+    
+    static func select(urls: [URL]) async {
+        guard !urls.isEmpty else {
+            print("[Atlas][Select] ⚠️ 0 URL ricevuti — nessuna selezione")
+            return
+        }
+        print("[Atlas][Select] ▶ select start urls=\(urls.count) first=\(urls.first?.path ?? "?")")
+        
+        let groups = Dictionary(grouping: urls, by: { $0.deletingLastPathComponent() })
+        for (_, group) in groups {
+            let sorted = group.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            if sorted.count > scriptThreshold {
+                print("[Atlas][Select] → AppleScript path (files=\(sorted.count) > \(scriptThreshold))")
+                await selectViaScript(files: sorted)
+            } else {
+                print("[Atlas][Select] → native activateFileViewerSelecting (files=\(sorted.count) ≤ \(scriptThreshold))")
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting(sorted)
+                }
+            }
+        }
+    }
+    
+    private static func selectViaScript(files: [URL]) async {
+        guard let directory = files.first?.deletingLastPathComponent() else { return }
+        let script = buildSelectScript(directory: directory, files: files)
+        let started = Date()
+        do {
+            let result = try await AsyncProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: [],
+                stdin: Data(script.utf8),
+                timeout: 120
+            )
+            let elapsed = Date().timeIntervalSince(started)
+            print("[Atlas][Select] osascript exit=\(result.exitCode) time=\(String(format: "%.1f", elapsed))s stdout=\(result.stdout.count)B stderr=\(result.stderr.prefix(300))")
+        } catch {
+            print("[Atlas][Select] ❌ osascript error: \(error.localizedDescription) after \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+        }
+    }
+    
+    static func buildSelectScript(directory: URL, files: [URL]) -> String {
+        let paths = files
+            .map { appleScriptLiteral($0.path) }
+            .joined(separator: ", ")
+        // Nota: gli alias si risolvono FUORI dal blocco `tell application "Finder"`,
+        // perché dentro il tell la coercizione `POSIX file ... as alias` fallisce.
+        return """
+        set theTarget to POSIX file \(appleScriptLiteral(directory.path)) as alias
+        set theItems to {}
+        repeat with thePath in {\(paths)}
+            try
+                set end of theItems to (POSIX file thePath as alias)
+            end try
+        end repeat
+        tell application "Finder"
+            activate
+            if (count of Finder windows) > 0 then
+                set target of front window to theTarget
+            else
+                set theWindow to make new Finder window
+                set target of theWindow to theTarget
+            end if
+            if (count of theItems) > 0 then
+                select theItems
+            end if
+        end tell
+        """
+    }
+    
+    static func appleScriptLiteral(_ string: String) -> String {
+        let escaped = string
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+}
+
 final class SelectFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
         guard let currentDirectory = context.currentDirectory else {
@@ -291,16 +401,19 @@ final class SelectFilesAction: ActionExecutor {
         }
         
         let targetFiles = resolveTargetFiles(step: step, directory: currentDirectory)
+        print("[Atlas][Select] execute dir=\(currentDirectory.path) targetFiles=\(targetFiles.count) inputs=\(step.inputs.count) format=\(step.format ?? "nil")")
         guard !targetFiles.isEmpty else {
+            print("[Atlas][Select] ⚠️ 0 file risolti — selezione vuota")
             return ActionResult(success: true, outputFiles: [], message: "Nessun file trovato da selezionare.")
         }
         
-        // Select & highlight files in Finder
-        NSWorkspace.shared.activateFileViewerSelecting(targetFiles)
+        // La selezione non crea file: outputFiles vuoto per evitare migliaia di
+        // righe in OutputFilesView e l'API nativa che crasha con liste enormi.
+        await FinderSelector.select(urls: targetFiles)
         
         return ActionResult(
             success: true,
-            outputFiles: targetFiles,
+            outputFiles: [],
             message: "Selezionati \(targetFiles.count) file nel Finder"
         )
     }
@@ -331,10 +444,79 @@ final class SelectFilesAction: ActionExecutor {
     }
 }
 
+// MARK: - Copy Files Action (N copies into a folder)
+
+final class CopyFilesAction: ActionExecutor {
+    private static let maxCopies = 100
+    
+    func validate(step: ActionStep, context: FinderContext) throws {
+        let files = FileResolver.resolveInputURLs(step: step, context: context)
+        guard !files.isEmpty else {
+            throw ExecutorError.validationFailed("Nessun file trovato da copiare.")
+        }
+        guard let count = Self.parseCopyCount(from: step.format), count > 0, count <= Self.maxCopies else {
+            throw ExecutorError.validationFailed("Specifica il numero di copie nel campo 'format' (es. '7' o '7;backup').")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = FileResolver.resolveInputURLs(step: step, context: context)
+        guard let currentDirectory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        guard let copyCount = Self.parseCopyCount(from: step.format), copyCount > 0, copyCount <= Self.maxCopies else {
+            throw ExecutorError.executionFailed("Numero di copie non valido nel campo 'format'.")
+        }
+        guard !files.isEmpty else {
+            return ActionResult(success: true, outputFiles: [], message: "Nessun file da copiare.")
+        }
+        
+        let folderName = Self.folderName(from: step.format) ?? "copie"
+        let targetFolder = currentDirectory.appendingPathComponent(folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        
+        var created: [URL] = []
+        let totalCopies = files.count * copyCount
+        var completed = 0
+        
+        for file in files {
+            let base = file.deletingPathExtension().lastPathComponent
+            let ext = file.pathExtension
+            for copyIndex in 1...copyCount {
+                completed += 1
+                progress?(completed, totalCopies, "Copia \(copyIndex)/\(copyCount) di \(file.lastPathComponent)")
+                let targetURL = FileResolver.uniqueURL(in: targetFolder, baseName: "\(base)_copia_\(copyIndex)", extensionName: ext)
+                try FileManager.default.copyItem(at: file, to: targetURL)
+                created.append(targetURL)
+            }
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: created,
+            message: "Create \(created.count) copie di \(files.count) file nella cartella '\(folderName)'"
+        )
+    }
+    
+    private static func parseCopyCount(from format: String?) -> Int? {
+        guard let format else { return nil }
+        let first = format.split(separator: ";", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return first.flatMap { Int($0) }
+    }
+    
+    private static func folderName(from format: String?) -> String? {
+        guard let format else { return nil }
+        let parts = format.split(separator: ";", maxSplits: 1)
+        guard parts.count > 1 else { return nil }
+        let name = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+}
+
 // MARK: - Safe Trash Files Action
 
-final class TrashFilesAction: ActionExecutor {
-    func validate(step: ActionStep, context: FinderContext) throws {
+final class TrashFilesAction: ActionExecutor {    func validate(step: ActionStep, context: FinderContext) throws {
         try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
     }
     

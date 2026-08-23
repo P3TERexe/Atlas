@@ -12,11 +12,20 @@ struct RollbackResult {
     let restoredFilesCount: Int
 }
 
+/// Thrown when a rollback could not fully restore the filesystem.
+struct RollbackError: Error, LocalizedError {
+    let failures: [String]
+    
+    var errorDescription: String? {
+        "Rollback incompleto (\(failures.count) operazioni fallite):\n" + failures.joined(separator: "\n")
+    }
+}
+
 /// Records a full filesystem operation for rollback and history purposes.
 /// Named `AtlasTransaction` to avoid colliding with `SwiftUI.Transaction`.
 struct AtlasTransaction: Codable, Identifiable {
-    let id: UUID
-    let steps: [ActionStep]
+    var id: UUID
+    var steps: [ActionStep]
     var backupURLs: [URL: URL] = [:] // original -> backup
     var createdURLs: [URL] = []      // files created by this transaction
     var query: String?
@@ -88,11 +97,20 @@ struct AtlasTransaction: Codable, Identifiable {
         createdURLs.append(url)
     }
     
+    /// Rolls back the transaction. Mutates `status` so a second invocation is
+    /// rejected instead of silently re-running a partial restore.
     @discardableResult
-    func rollback() throws -> RollbackResult {
+    mutating func rollback() throws -> RollbackResult {
+        guard status != .rolledBack else {
+            throw RollbackError(failures: ["La transazione \(id.uuidString) è già stata annullata."])
+        }
+        status = .rolledBack
+        completedAt = completedAt ?? Date()
+        
         let fm = FileManager.default
         var deleted = 0
         var restored = 0
+        var failures: [String] = []
         
         // 1. Delete files created by this transaction
         for url in createdURLs {
@@ -101,7 +119,7 @@ struct AtlasTransaction: Codable, Identifiable {
                     try fm.removeItem(at: url)
                     deleted += 1
                 } catch {
-                    print("Failed to remove created file \(url.path): \(error)")
+                    failures.append("Eliminazione di \(url.path): \(error.localizedDescription)")
                 }
             }
         }
@@ -116,8 +134,24 @@ struct AtlasTransaction: Codable, Identifiable {
                     try fm.moveItem(at: backup, to: original)
                     restored += 1
                 } catch {
-                    print("Failed to restore backup \(backup.path) to \(original.path): \(error)")
+                    failures.append("Ripristino di \(original.path): \(error.localizedDescription)")
                 }
+            } else {
+                failures.append("Backup mancante per \(original.path) (\(backup.path))")
+            }
+        }
+        
+        if !failures.isEmpty {
+            throw RollbackError(failures: failures)
+        }
+        
+        // 3. Remove backup directories this rollback emptied, so persistent
+        //    storage does not accumulate empty per-execution folders. Only
+        //    verified-empty directories are removed (never recursive).
+        let parentDirs = Set(backupURLs.values.map { $0.deletingLastPathComponent().standardizedFileURL })
+        for dir in parentDirs {
+            if (try? fm.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
+                try? fm.removeItem(at: dir)
             }
         }
         

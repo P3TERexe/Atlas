@@ -72,24 +72,24 @@ struct PlanValidator {
         }
         
         // 3. Validate format intent (e.g. "webp", "jpg", "png", "mp3", "pdf", "zip") for conversion/modification tasks
-        let formatKeywords = ["webp", "jpg", "jpeg", "png", "heic", "tiff", "gif", "mp3", "m4a", "pdf", "zip"]
+        let formatKeywords = ["webp", "jpg", "jpeg", "jepeg", "jepg", "png", "heic", "tiff", "gif", "mp3", "m4a", "pdf", "zip"]
         for kw in formatKeywords {
             if lowerQuery.contains(kw) {
+                let targetKw = (kw == "jepeg" || kw == "jepg") ? "jpg" : kw
                 let foundMatch = graph.steps.contains { step in
                     if let f = step.format?.lowercased() {
                         let ext = (f as NSString).pathExtension.lowercased()
                         let effectiveFormat = ext.isEmpty ? f : ext
-                        if kw == "jpeg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
-                        if kw == "jpg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
-                        if effectiveFormat == kw || f.hasSuffix("." + kw) { return true }
+                        if targetKw == "jpeg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
+                        if targetKw == "jpg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg" || f.contains("jpg")) { return true }
+                        if effectiveFormat == targetKw || f.hasSuffix("." + targetKw) { return true }
                     }
-                    if kw == "pdf" && step.tool.hasPrefix("pdf") { return true }
-                    if kw == "zip" && step.tool.hasPrefix("file") { return true }
+                    if targetKw == "pdf" && step.tool.hasPrefix("pdf") { return true }
+                    if targetKw == "zip" && step.tool.hasPrefix("file") { return true }
                     return false
                 }
                 if !foundMatch {
-                    let actualFormat = graph.steps.compactMap { $0.format }.first
-                    throw PlanValidationError.formatMismatch(expected: kw, found: actualFormat)
+                    throw PlanValidationError.intentMismatch("Richiesta per formato '\(kw)', ma l'AI ha impostato formati/strumenti non corrispondenti. Assicurati che 'format' sia impostato a '\(targetKw)'.")
                 }
             }
         }

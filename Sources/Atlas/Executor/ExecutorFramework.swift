@@ -57,6 +57,7 @@ class ExecutorFramework {
         
         // Gli step arrivano già ordinati topologicamente
         for (index, step) in graph.steps.enumerated() {
+            print("[Atlas][Executor] ▶ Step \(index + 1)/\(graph.steps.count): \(step.tool) format=\(step.format ?? "nil") inputs=\(step.inputs)")
             guard let capability = ToolRegistry.shared.capability(for: step.tool) else {
                 transaction.status = .failed
                 transaction.completedAt = Date()
@@ -110,12 +111,14 @@ class ExecutorFramework {
                     ))
                 }
             } catch {
+                print("[Atlas][Executor] ✗ Step \(index + 1)/\(graph.steps.count) fallito: \(error)")
                 transaction.status = .failed
                 transaction.completedAt = Date()
                 transaction.resultMessage = error.localizedDescription
                 HistoryStore.shared.record(transaction)
                 throw error
             }
+            print("[Atlas][Executor] ✓ Step \(index + 1)/\(graph.steps.count) completato: \(result.outputFiles.count) file")
             
             if !result.success {
                 transaction.status = .failed

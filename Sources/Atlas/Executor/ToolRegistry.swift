@@ -25,6 +25,12 @@ class ToolRegistry {
         return capabilities[id]
     }
     
+    /// ID di tutte le capability registrate, ordinati per stabilità
+    /// (consumati dall'enum dello schema del piano).
+    var allToolIds: [String] {
+        capabilities.keys.sorted()
+    }
+
     func allCapabilities() -> [ToolCapability] {
         return Array(capabilities.values)
     }

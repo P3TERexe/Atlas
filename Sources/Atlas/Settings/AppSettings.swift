@@ -110,6 +110,16 @@ final class AppSettings: ObservableObject {
         }
     }
     
+    // MARK: - Thinking / Reasoning Settings
+    
+    @Published var disableThinking: Bool = false {
+        didSet {
+            if disableThinking != oldValue {
+                defaults.set(disableThinking, forKey: "disable_thinking")
+            }
+        }
+    }
+    
     private let defaults = UserDefaults.standard
     
     /// Debounced keychain writes: typing an API key triggers delete+add
@@ -137,6 +147,7 @@ final class AppSettings: ObservableObject {
         }
         
         self.useStandardWindow = defaults.bool(forKey: "use_standard_window")
+        self.disableThinking = defaults.bool(forKey: "disable_thinking")
     }
     
     private func scheduleKeychainSave(key: String, newValue: String, errorMessage: String) {
@@ -177,4 +188,57 @@ final class AppSettings: ObservableObject {
         _ = KeychainStore.delete(key: "custom_api_key")
         customApiKey = ""
     }
+}
+
+// MARK: - Preset per la UI impostazioni (consumati da ProviderSections)
+
+extension AppSettings {
+    struct CustomPreset {
+        let name: String
+        let baseURL: String
+        let model: String
+        /// true se la voce apre un nuovo gruppo nel menu (Divider sopra).
+        let startsGroup: Bool
+
+        init(name: String, baseURL: String, model: String, startsGroup: Bool = false) {
+            self.name = name
+            self.baseURL = baseURL
+            self.model = model
+            self.startsGroup = startsGroup
+        }
+    }
+
+    /// Modelli suggeriti per OpenCode AI (Zen).
+    static let openCodeModels: [String] = [
+        "deepseek-v4-flash-free",
+        "big-pickle",
+        "mimo-v2.5-free",
+        "minimax-m3-free",
+        "nemotron-3-ultra-free",
+        "deepseek-v4-pro",
+        "gpt-5.6-sol",
+        "kimi-k2.6",
+    ]
+
+    /// Modelli suggeriti per NVIDIA Build.
+    static let nvidiaModels: [String] = [
+        "meta/llama-3.3-70b-instruct",
+        "meta/llama-3.1-70b-instruct",
+        "nvidia/llama-3.1-nemotron-70b-instruct",
+        "deepseek-ai/deepseek-r1",
+    ]
+
+    /// Preset del provider Custom (OpenAI-compatible).
+    static let customPresets: [CustomPreset] = [
+        CustomPreset(name: "DeepSeek V4 Flash", baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-flash"),
+        CustomPreset(name: "DeepSeek V4 Pro", baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-pro"),
+        CustomPreset(name: "OpenCode Go — DeepSeek V4 Flash", baseURL: "https://opencode.ai/zen/go/v1", model: "opencode-go/deepseek-v4-flash", startsGroup: true),
+        CustomPreset(name: "OpenCode Go — DeepSeek V4 Pro", baseURL: "https://opencode.ai/zen/go/v1", model: "opencode-go/deepseek-v4-pro"),
+        CustomPreset(name: "OpenCode", baseURL: "https://api.opencode.ai/v1", model: "opencode/default", startsGroup: true),
+        CustomPreset(name: "GLM-5.2 (ZhipuAI)", baseURL: "https://api.z.ai/api/paas/v4", model: "glm-5.2"),
+        CustomPreset(name: "LM Studio (locale)", baseURL: "http://localhost:1234/v1", model: "local-model"),
+        CustomPreset(name: "Groq", baseURL: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile"),
+        CustomPreset(name: "Together AI", baseURL: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf"),
+        CustomPreset(name: "Mistral AI", baseURL: "https://api.mistral.ai/v1", model: "mistral-small-latest"),
+    ]
 }

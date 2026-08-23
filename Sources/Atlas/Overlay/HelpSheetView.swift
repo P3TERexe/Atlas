@@ -10,7 +10,7 @@ struct HelpSheetView: View {
                 Image(systemName: "questionmark.circle.fill")
                     .foregroundColor(.accentColor)
                     .font(.title2)
-                Text("Guida & Limitazioni")
+                Text("Guida")
                     .font(.headline)
                 Spacer()
                 Button(action: onClose) {
@@ -20,10 +20,10 @@ struct HelpSheetView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.bottom, 4)
+            .padding(.bottom, 2)
             
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     
                     // Section 1: Capabilities
                     VStack(alignment: .leading, spacing: 6) {
@@ -32,73 +32,45 @@ struct HelpSheetView: View {
                             .foregroundColor(.green)
                         
                         Group {
-                            HelpBullet(icon: "photo", text: "Converti, ridimensiona, ruota, crea miniature e pulisci EXIF da immagini (PNG, JPG, WebP, HEIC, GIF)")
-                            HelpBullet(icon: "video", text: "Converti video in MP4/MOV ed estrai audio MP3/M4A")
-                            HelpBullet(icon: "doc.text", text: "Unisci, dividi pagine e comprimi documenti PDF")
-                            HelpBullet(icon: "doc.zipper", text: "Crea e gestisci archivi ZIP (inclusa la compressione di cartelle intere)")
-                            HelpBullet(icon: "function", text: "Calcoli matematici ad alta precisione (es. '15% di 85.99', 'sqrt(1764)') via bc nativo")
-                            HelpBullet(icon: "cursorarrow.click.2", label: "Selezione", text: "Seleziona file specifici nel Finder (es. 'seleziona file webp')")
+                            HelpBullet(icon: "photo", text: "Converti immagini (PNG, JPG, WebP, HEIC, GIF)")
+                            HelpBullet(icon: "video", text: "Converti video (MP4/MOV) ed estrai audio")
+                            HelpBullet(icon: "doc.text", text: "Unisci, dividi e comprimi PDF")
+                            HelpBullet(icon: "doc.zipper", text: "Crea archivi ZIP")
+                            HelpBullet(icon: "function", text: "Calcoli matematici (es. '15% di 85.99')")
+                            HelpBullet(icon: "cursorarrow.click.2", text: "Seleziona file nel Finder per tipo")
                         }
                     }
                     .padding(10)
                     .background(Color.green.opacity(0.06))
                     .cornerRadius(8)
                     
-                    // Section 2: Instant Actions 0ms
+                    // Section 2: Limitations
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("⚡ Instant Actions (0ms)", systemImage: "bolt.fill")
-                            .font(.subheadline.bold())
-                            .foregroundColor(.yellow)
-                        
-                        Text("Scrivi semplicemente la parola chiave senza frasi complesse per un'esecuzione istantanea locale a 0ms:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        HStack(spacing: 6) {
-                            Text("jpg")
-                            Text("png")
-                            Text("webp")
-                            Text("mp3")
-                            Text("mp4")
-                            Text("zip")
-                            Text("unisci pdf")
-                            Text("bw")
-                        }
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.accentColor)
-                    }
-                    .padding(10)
-                    .background(Color.yellow.opacity(0.06))
-                    .cornerRadius(8)
-                    
-                    // Section 3: Limitations
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Cosa NON può fare (Limitazioni)", systemImage: "hand.raised.fill")
+                        Label("Limitazioni", systemImage: "hand.raised.fill")
                             .font(.subheadline.bold())
                             .foregroundColor(.orange)
                         
                         Group {
-                            HelpBullet(icon: "eye.slash", text: "Non legge o analizza il contenuto visuale delle foto (es. 'trova la foto con il gatto')")
-                            HelpBullet(icon: "bubble.left.and.bubble.right", text: "Non è una chat generica (risponde solo ad azioni sul filesystem)")
-                            HelpBullet(icon: "doc.richtext", text: "Non modifica il testo interno dei file Word o PDF (solo unione/split/conversione)")
+                            HelpBullet(icon: "eye.slash", text: "Non analizza il contenuto visuale delle foto")
+                            HelpBullet(icon: "bubble.left.and.bubble.right", text: "Non è una chat — solo azioni su file")
+                            HelpBullet(icon: "doc.richtext", text: "Non modifica testo interno di Word/PDF")
                         }
                     }
                     .padding(10)
                     .background(Color.orange.opacity(0.06))
                     .cornerRadius(8)
                     
-                    // Section 4: Shortcuts
+                    // Section 3: Shortcuts
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Scorciatoie Utili", systemImage: "keyboard")
+                        Label("Scorciatoie", systemImage: "keyboard")
                             .font(.subheadline.bold())
                             .foregroundColor(.primary)
                         
                         Group {
-                            ShortcutRow(shortcut: "⌥ Space", description: "Apri/Chiudi Atlas nel Finder")
-                            ShortcutRow(shortcut: "↑ / ↓", description: "Naviga cronologia comandi recenti nella barra")
-                            ShortcutRow(shortcut: "⌘ H", description: "Mostra cronologia completa operazioni con undo selettivo")
-                            ShortcutRow(shortcut: "⌘ ⇧ Z", description: "Annulla (Undo) l'ultima operazione eseguita")
-                            ShortcutRow(shortcut: "Esc", description: "Chiudi Atlas")
+                            ShortcutRow(shortcut: "⌥ Space", description: "Apri/Chiudi Atlas")
+                            ShortcutRow(shortcut: "↑ / ↓", description: "Naviga cronologia comandi")
+                            ShortcutRow(shortcut: "⌘⇧Z", description: "Annulla ultima operazione")
+                            ShortcutRow(shortcut: "Esc", description: "Chiudi")
                         }
                     }
                     .padding(10)

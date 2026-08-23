@@ -8,7 +8,7 @@ struct HistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("Cronologia operazioni", systemImage: "clock.arrow.circlepath")
+                Label("Cronologia", systemImage: "clock.arrow.circlepath")
                     .font(.headline)
                 Spacer()
                 if !store.transactions.isEmpty {
@@ -32,13 +32,13 @@ struct HistoryView: View {
                     Image(systemName: "clock")
                         .font(.system(size: 36))
                         .foregroundColor(.secondary)
-                    Text("Nessuna operazione ancora eseguita")
+                    Text("Nessuna operazione eseguita")
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 6) {
                         ForEach(store.transactions) { transaction in
                             HistoryRow(transaction: transaction, onReexecute: onReexecute)
                         }
@@ -56,6 +56,7 @@ private struct HistoryRow: View {
     var onReexecute: ((String) -> Void)? = nil
     @ObservedObject private var store = HistoryStore.shared
     @State private var rollbackMessage: String? = nil
+    @State private var showDetails: Bool = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -63,7 +64,7 @@ private struct HistoryRow: View {
                 statusIcon
                     .foregroundColor(statusColor)
                 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(title)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
@@ -79,64 +80,103 @@ private struct HistoryRow: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    // Info button (Tasto 'i') for terminal commands / step details
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showDetails.toggle()
+                        }
+                    } label: {
+                        Image(systemName: showDetails ? "info.circle.fill" : "info.circle")
+                            .font(.caption2)
+                            .foregroundColor(showDetails ? .accentColor : .secondary)
+                            .padding(5)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.06)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dettagli operazione e comandi")
+                    
                     if transaction.status == .success {
                         Button {
                             if let res = store.rollback(id: transaction.id) {
                                 rollbackMessage = "Annullata (\(res.deletedFilesCount) eliminati)"
                             }
                         } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.caption2)
-                                Text("Annulla")
-                                    .font(.caption2)
-                            }
-                            .foregroundColor(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.orange.opacity(0.12)))
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                                .padding(5)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.orange.opacity(0.12)))
                         }
                         .buttonStyle(.plain)
-                        .help("Annulla questa specifica operazione")
+                        .help("Annulla operazione")
                     } else if transaction.status == .rolledBack {
-                        Text("Annullata")
-                            .font(.caption2.bold())
+                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                            .font(.caption)
                             .foregroundColor(.gray)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            .help("Annullata")
                     }
                     
-                    // Redo / Riesegui button
+                    // Redo button
                     if let query = transaction.query ?? transaction.summary {
                         Button {
                             onReexecute?(query)
                         } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.uturn.forward")
-                                    .font(.caption2)
-                                Text("Redo")
-                                    .font(.caption2)
-                            }
-                            .foregroundColor(.accentColor)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.12)))
+                            Image(systemName: "arrow.uturn.forward")
+                                .font(.caption2)
+                                .foregroundColor(.accentColor)
+                                .padding(5)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.12)))
                         }
                         .buttonStyle(.plain)
-                        .help("Riesegui questo comando nel Finder")
+                        .help("Riesegui")
                     }
                 }
             }
             
-            if !transaction.createdURLs.isEmpty {
-                Text("\(transaction.createdURLs.count) file creati")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            // Expanded details: steps, tool names, inputs, and commands
+            if showDetails {
+                VStack(alignment: .leading, spacing: 4) {
+                    Divider()
+                        .padding(.vertical, 2)
+                    
+                    ForEach(transaction.steps, id: \.id) { step in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "terminal.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.accentColor)
+                                Text(step.tool)
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                if let format = step.format {
+                                    Text("→ \(format.uppercased())")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+                            
+                            if !step.inputs.isEmpty {
+                                Text("Input: \(step.inputs.joined(separator: ", "))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(6)
+                        .background(Color.black.opacity(0.25))
+                        .cornerRadius(5)
+                    }
+                    
+                    if let msg = rollbackMessage {
+                        Text(msg)
+                            .font(.caption2.bold())
+                            .foregroundColor(.orange)
+                    }
+                }
+                .transition(.opacity)
             }
         }
-        .padding(10)
+        .padding(8)
         .background(
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.primary.opacity(0.05))
@@ -148,10 +188,16 @@ private struct HistoryRow: View {
     }
     
     private var subtitle: String {
+        var parts: [String] = []
         if let message = transaction.resultMessage, transaction.status != .success {
             return message
         }
-        return transaction.toolNames.joined(separator: " → ")
+        parts.append(transaction.toolNames.joined(separator: " → "))
+        let count = transaction.createdURLs.count
+        if count > 0 {
+            parts.append("· \(count) file")
+        }
+        return parts.joined(separator: " ")
     }
     
     private var statusIcon: Image {

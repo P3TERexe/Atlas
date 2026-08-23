@@ -55,31 +55,51 @@ enum AsyncProcessRunner {
     ) async throws -> AsyncProcessResult {
         let cancellation = ProcessCancellationState()
         
+        print("[Atlas][Proc] ▶ \(executableURL.lastPathComponent) args=\(arguments.count) stdin=\(stdin?.count ?? 0)B cwd=\(currentDirectoryURL?.path ?? "-")")
+        
         let runTask = Task.detached(priority: .userInitiated) { () -> AsyncProcessResult in
             let process = Process()
             process.executableURL = executableURL
             process.arguments = arguments
             process.currentDirectoryURL = currentDirectoryURL
+            // PATH determinista: i nomi nudi (ffmpeg, ...) devono risolvere
+            // dentro la sandbox indipendentemente da come Atlas è stato lanciato.
+            process.environment = (process.environment ?? [:]).merging(
+                ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"],
+                uniquingKeysWith: { _, new in new }
+            )
             
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
             
+            // Drain all three pipes concurrently BEFORE any blocking write:
+            // a full pipe buffer (~64KB) must never block the others
+            // (classic deadlock source with large stdout/stderr/stdin).
+            let stdoutReader = Task.detached(priority: .utility) { stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
+            let stderrReader = Task.detached(priority: .utility) { stderrPipe.fileHandleForReading.readDataToEndOfFile() }
+            
+            var stdinWriter: Task<Error?, Never>?
             if let stdin {
                 let stdinPipe = Pipe()
                 process.standardInput = stdinPipe
                 try process.run()
-                stdinPipe.fileHandleForWriting.write(stdin)
-                stdinPipe.fileHandleForWriting.closeFile()
+                // Write stdin off-thread: a payload larger than the pipe buffer
+                // blocks until the child consumes it, so it must never run on
+                // the thread that also waits for exit/timeout.
+                stdinWriter = Task.detached(priority: .utility) { () -> Error? in
+                    do {
+                        try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+                        stdinPipe.fileHandleForWriting.closeFile()
+                        return nil
+                    } catch {
+                        return error
+                    }
+                }
             } else {
                 try process.run()
             }
-            
-            // Drain both pipes concurrently: a blocked pipe must never
-            // prevent the other from being read (deadlock source).
-            let stdoutReader = Task.detached(priority: .utility) { stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
-            let stderrReader = Task.detached(priority: .utility) { stderrPipe.fileHandleForReading.readDataToEndOfFile() }
             
             let started = Date()
             while process.isRunning {
@@ -94,8 +114,16 @@ enum AsyncProcessRunner {
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
             
+            // The writers/readers complete once the process exits (or is
+            // terminated by cancel/timeout below).
             let stdoutData = await stdoutReader.value
             let stderrData = await stderrReader.value
+            if let stdinWriter, let writeError = await stdinWriter.value, process.isRunning == false, process.terminationStatus != 0 {
+                print("[Atlas][Proc] ⚠️ stdin write error: \(writeError)")
+            }
+            
+            let elapsed = Date().timeIntervalSince(started)
+            print("[Atlas][Proc] ✓ \(executableURL.lastPathComponent) exit=\(process.terminationStatus) time=\(String(format: "%.1f", elapsed))s stdout=\(stdoutData.count)B stderr=\(stderrData.count)B")
             
             return AsyncProcessResult(
                 exitCode: process.terminationStatus,
