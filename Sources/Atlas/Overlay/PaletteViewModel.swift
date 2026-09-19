@@ -11,7 +11,14 @@ final class PaletteViewModel: ObservableObject {
     @Published var plannedGraph: ActionGraph? = nil
     @Published var executionMessage: String? = nil
     @Published var lastTransaction: AtlasTransaction? = nil
+    struct PendingOperation {
+        let id: UUID
+        let query: String
+        let graph: ActionGraph
+        let context: FinderContext
+    }
     @Published var progress: ProgressUpdate? = nil
+    @Published private(set) var pendingOperation: PendingOperation?
 
     // Pannelli secondari (Cronologia / Guida / Debug)
     @Published var showDebug: Bool = false
@@ -38,7 +45,8 @@ final class PaletteViewModel: ObservableObject {
     private var savedDraft: String = ""
 
     func refreshContext() async {
-        cachedContext = await contextProvider.getCurrentContext()
+        guard pendingOperation == nil, !isExecuting else { return }
+        cachedContext = try? await contextProvider.getCurrentContext()
     }
 
     enum HistoryDirection { case up, down }
@@ -77,12 +85,7 @@ final class PaletteViewModel: ObservableObject {
 
     func cancel() {
         currentTask?.cancel()
-        currentTask = nil
-        withAnimation {
-            isExecuting = false
-            progress = nil
-        }
-        executionMessage = "⚠︎ Operazione annullata dall'utente."
+        executionMessage = "⚠︎ Annullamento in corso…"
     }
 
     func clearDebugLog() {
@@ -92,7 +95,9 @@ final class PaletteViewModel: ObservableObject {
     }
 
     func executeCommand() {
-        guard !query.isEmpty else { return }
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard currentTask == nil else { return }
+        let query = self.query
         saveToHistory(query)
         isExecuting = true
         progress = ProgressUpdate(stepIndex: 0, totalSteps: 1, message: "Analizzo la richiesta con \(AppSettings.shared.defaultProvider.rawValue)...")
@@ -100,60 +105,86 @@ final class PaletteViewModel: ObservableObject {
         plannedGraph = nil
         showHistory = false
 
-        currentTask = Task { @MainActor in
-            // Fetch fresh context once, off the main thread, then reuse it for planning
+        let id = UUID()
+        currentTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.currentTask = nil; self.pendingOperation = nil }
             print("[Atlas][UI] ▶ planning start query=\"\(query)\"")
-            let context = await contextProvider.getCurrentContext()
+            let context: FinderContext
+            do {
+                context = try await self.contextProvider.getCurrentContext()
+            } catch {
+                self.failPlanning(id: id, message: error.localizedDescription)
+                return
+            }
             print("[Atlas][UI] context dir=\(context.currentDirectory?.path ?? "nil") selected=\(context.selectedFiles.count) visible=\(context.visibleFiles.count)")
             guard !Task.isCancelled else { return }
             self.cachedContext = context
 
             do {
-                planner.activeProvider = AppSettings.shared.defaultProvider
-                let graph = try await planner.plan(query: query, context: context)
-                lastPrompt = planner.lastPrompt
-                lastResponse = planner.lastResponse
-                print("[Atlas][UI] plan ok steps=\(graph.steps.count) \(planner.lastResponse ?? "")")
+                self.planner.activeProvider = AppSettings.shared.defaultProvider
+                let graph = try await self.planner.plan(query: query, context: context)
+                self.lastPrompt = self.planner.lastPrompt
+                self.lastResponse = self.planner.lastResponse
+                print("[Atlas][UI] plan ok steps=\(graph.steps.count) \(self.planner.lastResponse ?? "")")
                 guard !Task.isCancelled else { return }
 
                 let assessment = RiskAssessment.analyze(graph: graph, context: context)
                 if assessment.riskLevel == .none {
-                    // Instant 0ms execution for zero risk operations (file.select, shell.calc, read-only)
-                    self.executeGraph(graph)
+                    self.admit(PendingOperation(id: id, query: query, graph: graph, context: context))
+                    self.run(pending: self.pendingOperation)
                 } else {
-                    self.plannedGraph = graph
+                    self.admit(PendingOperation(id: id, query: query, graph: graph, context: context))
                     withAnimation { self.isExecuting = false }
                     self.progress = nil
                 }
             } catch is CancellationError {
-                // Silently handled — cancelCurrentTask() already updated UI
                 print("[Atlas][UI] planning cancelled")
             } catch {
-                print("[Atlas][UI] ❌ planning error: \(error.localizedDescription)")
-                guard !Task.isCancelled else { return }
-                withAnimation { self.isExecuting = false }
-                self.progress = nil
-                self.executionMessage = "❌ Errore durante la pianificazione (\(AppSettings.shared.defaultProvider.rawValue)):\n\(error.localizedDescription)"
-                self.showDebug = true
+                self.failPlanning(id: id, message: error.localizedDescription)
             }
         }
     }
 
+    /// Freezes the admitted query/graph/context triple. Context refresh cannot
+    /// replace it, and confirm/auto-run always executes exactly this snapshot.
+    private func admit(_ operation: PendingOperation) {
+        pendingOperation = operation
+    }
+
+    private func failPlanning(id: UUID, message: String) {
+        guard pendingOperation?.id == id || pendingOperation == nil else { return }
+        withAnimation { isExecuting = false }
+        progress = nil
+        executionMessage = "❌ Errore durante la pianificazione (\(AppSettings.shared.defaultProvider.rawValue)):\n\(message)"
+        showDebug = true
+    }
+
     func executeGraph(_ graph: ActionGraph) {
+        guard currentTask == nil else { return }
+        // The confirmed pending snapshot is authoritative; never re-read Finder.
+        let pending = pendingOperation
+        let context = pending?.context ?? cachedContext
+        guard let context else {
+            isExecuting = false
+            executionMessage = "❌ Contesto Finder non disponibile."
+            return
+        }
+        let query = pending?.query ?? self.query
+        let id = pending?.id ?? UUID()
         isExecuting = true
         progress = ProgressUpdate(stepIndex: 0, totalSteps: graph.steps.count, message: "Inizializzazione esecuzione...")
         plannedGraph = nil
 
-        currentTask = Task { @MainActor in
-            // Fetch fresh context once, off the main thread, then reuse it for execution
+        currentTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.currentTask = nil; self.pendingOperation = nil }
             print("[Atlas][UI] ▶ execution start steps=\(graph.steps.count)")
-            let context = await contextProvider.getCurrentContext()
-            print("[Atlas][UI] exec context dir=\(context.currentDirectory?.path ?? "nil") selected=\(context.selectedFiles.count) visible=\(context.visibleFiles.count)")
             guard !Task.isCancelled else { return }
             self.cachedContext = context
 
             do {
-                let transaction = try await executor.execute(graph: graph, context: context, query: query) { update in
+                let transaction = try await self.executor.execute(graph: graph, context: context, query: query) { update in
                     guard !Task.isCancelled else { return }
                     self.progress = update
                 }
@@ -162,22 +193,44 @@ final class PaletteViewModel: ObservableObject {
                 withAnimation { self.isExecuting = false }
                 self.progress = nil
                 self.lastTransaction = transaction
-                self.cachedContext = nil // Refresh cache for next run
+                self.cachedContext = nil
                 let created = transaction.createdURLs.count
                 self.executionMessage = created > 0
                     ? "✓ \(transaction.steps.count) step completati — \(created) file creati."
                     : "✓ Eseguiti \(transaction.steps.count) step con successo."
             } catch is CancellationError {
-                // Silently handled — cancelCurrentTask() already updated UI
                 print("[Atlas][UI] execution cancelled")
             } catch {
-                print("[Atlas][UI] ❌ execution error: \(error.localizedDescription)")
                 guard !Task.isCancelled else { return }
+                print("[Atlas][UI] ❌ execution error: \(error.localizedDescription)")
                 withAnimation { self.isExecuting = false }
                 self.progress = nil
                 self.executionMessage = "❌ Errore durante l'esecuzione:\n\(error.localizedDescription)"
                 self.showDebug = true
             }
         }
+    }
+
+    /// Confirmation path: executes the frozen pending snapshot and validates
+    /// that explicit inputs still exist, without picking different homonyms.
+    func confirmPendingOperation() {
+        guard let pending = pendingOperation else { return }
+        for step in pending.graph.steps where !step.inputs.isEmpty {
+            for input in step.inputs {
+                let candidates = [input.hasPrefix("/") ? URL(fileURLWithPath: input) : pending.context.currentDirectory?.appendingPathComponent(input)]
+                if let url = candidates.compactMap({ $0 }).first,
+                   !FileManager.default.fileExists(atPath: url.path) {
+                    executionMessage = "❌ L'input '\(input)' non esiste più; ricrea il piano."
+                    isExecuting = false
+                    return
+                }
+            }
+        }
+        run(pending: pending)
+    }
+
+    private func run(pending: PendingOperation?) {
+        guard let pending else { return }
+        executeGraph(pending.graph)
     }
 }

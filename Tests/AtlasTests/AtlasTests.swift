@@ -229,6 +229,37 @@ final class AtlasTests: XCTestCase {
         let graph = try XCTUnwrap(InstantActionParser.parse(query: "jpg", context: context))
         XCTAssertEqual(graph.steps[0].inputs, ["foto.heic"], "Senza selezione si usano i visibili filtrati per estensione convertibile")
     }
+
+    func testQualifiedCompressionDefersToModel() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let context = FinderContext(currentDirectory: directory, selectedFiles: [], visibleFiles: [directory.appendingPathComponent("photo.png")], installedTools: [], timestamp: Date())
+        XCTAssertNil(InstantActionParser.parse(query: "comprimi le immagini a qualità 50", context: context))
+        XCTAssertNil(InstantActionParser.parse(query: "comprimi i file tranne photo.png", context: context))
+    }
+
+    func testPhotoCompressionExcludesNonImages() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let context = FinderContext(currentDirectory: directory, selectedFiles: [directory.appendingPathComponent("photo.png"), directory.appendingPathComponent("note.txt")], visibleFiles: [], installedTools: [], timestamp: Date())
+        let graph = try XCTUnwrap(InstantActionParser.parse(query: "comprimi le immagini", context: context))
+        XCTAssertEqual(graph.steps[0].tool, "file.zip")
+        XCTAssertEqual(graph.steps[0].inputs, ["photo.png"])
+    }
+
+    func testSelectAllUsesVisibleFilesDespitePartialSelection() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let selected = directory.appendingPathComponent("one.png")
+        let context = FinderContext(currentDirectory: directory, selectedFiles: [selected], visibleFiles: [selected, directory.appendingPathComponent("two.jpg"), directory.appendingPathComponent("note.txt")], installedTools: [], timestamp: Date())
+        let graph = try XCTUnwrap(InstantActionParser.parse(query: "select all images", context: context))
+        XCTAssertEqual(graph.steps[0].inputs, ["one.png", "two.jpg"])
+    }
+
+    func testLocalParserPreservesExternalSourcePath() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let external = directory.appendingPathComponent("external/photo.png")
+        let context = FinderContext(currentDirectory: directory.appendingPathComponent("working"), selectedFiles: [external], visibleFiles: [], installedTools: [], timestamp: Date())
+        let graph = try XCTUnwrap(InstantActionParser.parse(query: "jpg", context: context))
+        XCTAssertEqual(graph.steps[0].inputs, [external.path])
+    }
     
     // MARK: - FinderSelector
     

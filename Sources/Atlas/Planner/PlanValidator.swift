@@ -27,115 +27,94 @@ enum PlanValidationError: Error, LocalizedError {
 }
 
 struct PlanValidator {
-    
-    /// Validates that the generated ActionGraph matches the user's intent and context.
+    /// Checks tools, graph structure and inputs. Only complete local phrases
+    /// have a canonical intent; arbitrary natural language is not inferred.
     @MainActor
     static func validate(graph: ActionGraph, query: String, context: FinderContext) throws {
-        guard !graph.steps.isEmpty else {
-            throw PlanValidationError.emptyPlan
-        }
-        
-        let lowerQuery = query.lowercased()
-        
-        // 1. Validate that all tools exist
-        for step in graph.steps {
+        guard !graph.steps.isEmpty else { throw PlanValidationError.emptyPlan }
+        let sorted = try graph.topologicallySorted()
+        for step in sorted.steps {
             guard ToolRegistry.shared.capability(for: step.tool) != nil else {
                 throw PlanValidationError.toolNotFound(step.tool)
             }
         }
-        
-        // 2. Pure selection guardrail: if user ONLY asked to select/highlight files, enforce file.select ONLY
-        let selectionVerbs = ["seleziona", "select", "evidenzia", "mostra nel finder", "highlight"]
-        let modificationVerbs = ["converti", "trasforma", "ridimensiona", "comprimi", "unisci", "rinomina", "estrai", "modifica", "cambia"]
-        
-        let isSelectionRequest = selectionVerbs.contains { lowerQuery.contains($0) }
-        let hasModificationRequest = modificationVerbs.contains { lowerQuery.contains($0) }
-        
-        if isSelectionRequest && !hasModificationRequest {
-            let invalidTools = graph.steps.filter { $0.tool != "file.select" }
-            if !invalidTools.isEmpty {
-                throw PlanValidationError.intentMismatch("L'utente ha chiesto solo di SELEZIONARE file. Usa esclusivamente 'file.select' senza convertire o modificare i file.")
+        let rules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
+        if rules.isEmpty, let canonical = InstantActionParser.parse(query: query, context: context) {
+            guard sorted.steps.count == canonical.steps.count else {
+                throw PlanValidationError.intentMismatch("La frase locale richiede un solo strumento.")
             }
-            // Pure selection validated successfully — skip format checks
-            return
-        }
-        
-        // 2b. Photo/Image Compression Guardrail: "comprimi foto/immagini" MUST produce ZIP unless quality/resampling is requested
-        let isPhotoCompressQuery = lowerQuery.contains("comprimi") && (lowerQuery.contains("foto") || lowerQuery.contains("immagini"))
-        let hasQualityOrFormatRequest = ["qualità", "qualita", "ridimensiona", "resize", "risoluzione", "webp", "jpg", "png", "heic"].contains { lowerQuery.contains($0) }
-        
-        if isPhotoCompressQuery && !hasQualityOrFormatRequest {
-            let hasZipTool = graph.steps.contains { $0.tool == "file.zip" || $0.tool == "file.compress" }
-            if !hasZipTool {
-                throw PlanValidationError.intentMismatch("La richiesta di compressione foto senza indicazione di qualità/formato deve creare un archivio ZIP. Usa 'file.zip' e non convertire o ridimensionare le immagini.")
+            for (actual, expected) in zip(sorted.steps, canonical.steps) {
+                guard actual.tool == expected.tool else {
+                    throw PlanValidationError.intentMismatch("La frase locale richiede '\(expected.tool)'.")
+                }
+                if let format = expected.format, actual.format?.lowercased() != format {
+                    throw PlanValidationError.formatMismatch(expected: format, found: actual.format)
+                }
+                if expected.grayscale == true && actual.grayscale != true {
+                    throw PlanValidationError.grayscaleMissing
+                }
             }
         }
-        
-        // 3. Validate format intent (e.g. "webp", "jpg", "png", "mp3", "pdf", "zip") for conversion/modification tasks
-        let formatKeywords = ["webp", "jpg", "jpeg", "jepeg", "jepg", "png", "heic", "tiff", "gif", "mp3", "m4a", "pdf", "zip"]
-        for kw in formatKeywords {
-            if lowerQuery.contains(kw) {
-                let targetKw = (kw == "jepeg" || kw == "jepg") ? "jpg" : kw
-                let foundMatch = graph.steps.contains { step in
-                    if let f = step.format?.lowercased() {
-                        let ext = (f as NSString).pathExtension.lowercased()
-                        let effectiveFormat = ext.isEmpty ? f : ext
-                        if targetKw == "jpeg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg") { return true }
-                        if targetKw == "jpg" && (effectiveFormat == "jpg" || effectiveFormat == "jpeg" || f.contains("jpg")) { return true }
-                        if effectiveFormat == targetKw || f.hasSuffix("." + targetKw) { return true }
+
+        // Each entry contains only outputs declared by extension conversions
+        // and their ancestors. Rename/copy formats are not output extensions.
+        var availableOutputs: [String: Set<URL>] = [:]
+        for step in sorted.steps {
+            guard let capability = ToolRegistry.shared.capability(for: step.tool) else { continue }
+            let predecessors = (step.dependsOn ?? []).reduce(into: Set<URL>()) {
+                $0.formUnion(availableOutputs[$1] ?? [])
+            }
+            if step.tool.hasPrefix("shell.") {
+                try capability.executor.validate(step: step, context: context)
+                availableOutputs[step.id] = predecessors
+                continue
+            }
+            let extensions: Set<String>? = capability.inputFormats.isEmpty || capability.inputFormats.contains("*") ? nil : Set(capability.inputFormats)
+            let allowDirectories = ["file.zip", "file.compress", "file.select", "file.trash"].contains(step.tool)
+            var inputs: [URL] = []
+            var hasFutureInput = false
+            if step.inputs.isEmpty {
+                inputs = try InputResolver.resolve(step: step, context: context, extensions: extensions, allowDirectories: allowDirectories)
+            } else {
+                for input in step.inputs {
+                    let url = try inputURL(input, context: context)
+                    if !FileManager.default.fileExists(atPath: url.path), predecessors.contains(url) {
+                        guard extensions == nil || extensions!.contains(url.pathExtension.lowercased()) else {
+                            throw PlanValidationError.intentMismatch("Output precedente di tipo incompatibile: \(input)")
+                        }
+                        hasFutureInput = true
+                        inputs.append(url)
+                    } else {
+                        var single = step
+                        single.inputs = [input]
+                        inputs += try InputResolver.resolve(step: single, context: context, extensions: extensions, allowDirectories: allowDirectories)
                     }
-                    if targetKw == "pdf" && step.tool.hasPrefix("pdf") { return true }
-                    if targetKw == "zip" && step.tool.hasPrefix("file") { return true }
-                    return false
-                }
-                if !foundMatch {
-                    throw PlanValidationError.intentMismatch("Richiesta per formato '\(kw)', ma l'AI ha impostato formati/strumenti non corrispondenti. Assicurati che 'format' sia impostato a '\(targetKw)'.")
                 }
             }
-        }
-        
-        // 4. Validate grayscale / B&W intent
-        if lowerQuery.contains("bianco e nero") || lowerQuery.contains("b&w") || lowerQuery.contains("grayscale") || lowerQuery.contains("grigio") {
-            let hasGrayscale = graph.steps.contains { $0.grayscale == true }
-            if !hasGrayscale {
-                throw PlanValidationError.grayscaleMissing
+            if !hasFutureInput {
+                try capability.executor.validate(step: step, context: context)
             }
-        }
-        
-        // 5. Validate input files availability for target tool
-        for step in graph.steps {
-            if step.tool == "image.convert" || step.tool == "pdf.fromImages" {
-                let hasImages = hasMatchingFiles(in: context, exts: MediaFormats.image, stepInputs: step.inputs)
-                if !hasImages {
-                    throw PlanValidationError.noMatchingFiles(tool: step.tool, expectedType: "immagine (png, jpg, webp, heic...)")
-                }
-            } else if step.tool.hasPrefix("pdf.") {
-                let hasPDFs = hasMatchingFiles(in: context, exts: MediaFormats.pdf, stepInputs: step.inputs)
-                if !hasPDFs {
-                    throw PlanValidationError.noMatchingFiles(tool: step.tool, expectedType: "PDF")
-                }
-            } else if step.tool.hasPrefix("video.") {
-                let hasVideos = hasMatchingFiles(in: context, exts: MediaFormats.video, stepInputs: step.inputs)
-                if !hasVideos {
-                    throw PlanValidationError.noMatchingFiles(tool: step.tool, expectedType: "video (mp4, mov...)")
+            if ["image.convert", "video.convert", "video.extractAudio"].contains(step.tool),
+               let format = step.format, !capability.outputFormats.contains(format.lowercased()) {
+                throw PlanValidationError.intentMismatch("Formato non supportato da '\(step.tool)': \(format)")
+            }
+            var declared = predecessors
+            for input in inputs {
+                let output = step.outputName(for: input.path)
+                if output != input.path {
+                    declared.insert(URL(fileURLWithPath: output).standardizedFileURL)
                 }
             }
+            availableOutputs[step.id] = declared
         }
     }
-    
-    private static func hasMatchingFiles(in context: FinderContext, exts: Set<String>, stepInputs: [String]) -> Bool {
-        if !stepInputs.isEmpty {
-            for input in stepInputs {
-                let ext = (input as NSString).pathExtension.lowercased()
-                if exts.contains(ext) { return true }
-            }
+
+    private static func inputURL(_ input: String, context: FinderContext) throws -> URL {
+        if let url = URL(string: input), url.isFileURL { return url.standardizedFileURL }
+        if input.hasPrefix("/") { return URL(fileURLWithPath: input).standardizedFileURL }
+        guard let directory = context.currentDirectory else {
+            throw PlanValidationError.intentMismatch("Cartella corrente non disponibile per '\(input)'.")
         }
-        for url in context.selectedFiles {
-            if exts.contains(url.pathExtension.lowercased()) { return true }
-        }
-        for url in context.visibleFiles {
-            if exts.contains(url.pathExtension.lowercased()) { return true }
-        }
-        return false
+        return directory.appendingPathComponent(input).standardizedFileURL
     }
 }

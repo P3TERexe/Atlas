@@ -57,52 +57,6 @@ class FilePlugin: AtlasPlugin {
 // MARK: - Shared input resolution
 
 enum FileResolver {
-    static func resolveInputURLs(step: ActionStep, context: FinderContext, isDirectoryOnly: Bool = false, allowDirectories: Bool = false) -> [URL] {
-        guard let currentDirectory = context.currentDirectory else { return [] }
-        
-        let matchingSelected = context.selectedFiles.filter { url in
-            var isDir: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-            guard exists else { return false }
-            if isDirectoryOnly { return isDir.boolValue }
-            return allowDirectories ? true : !isDir.boolValue
-        }
-        
-        if !matchingSelected.isEmpty {
-            let selectedNames = Set(matchingSelected.map { $0.lastPathComponent })
-            let stepInputNames = Set(step.inputs)
-            if step.inputs.isEmpty || !stepInputNames.isDisjoint(with: selectedNames) {
-                return matchingSelected
-            }
-        }
-        
-        let files: [URL]
-        if !step.inputs.isEmpty {
-            files = step.inputs.compactMap { inputPath in
-                let url = currentDirectory.appendingPathComponent(inputPath)
-                return FileManager.default.fileExists(atPath: url.path) ? url : nil
-            }
-        } else {
-            guard let contents = try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-                return []
-            }
-            files = contents
-        }
-        
-        var isDir: ObjCBool = false
-        return files.filter { url in
-            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-            if isDirectoryOnly { return isDir.boolValue }
-            return allowDirectories ? true : !isDir.boolValue
-        }
-    }
-    
-    static func validateNonEmpty(step: ActionStep, context: FinderContext, allowDirectories: Bool = false) throws {
-        guard !resolveInputURLs(step: step, context: context, allowDirectories: allowDirectories).isEmpty else {
-            throw ExecutorError.validationFailed("Nessun elemento trovato nella cartella o tra gli elementi selezionati.")
-        }
-    }
-    
     static func uniqueURL(in directory: URL, baseName: String, extensionName: String) -> URL {
         var candidate = directory.appendingPathComponent(baseName + "." + extensionName)
         var counter = 2
@@ -118,7 +72,7 @@ enum FileResolver {
 
 final class RenameFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try FileResolver.validateNonEmpty(step: step, context: context)
+        _ = try InputResolver.resolve(step: step, context: context)
         
         guard let template = step.format?.trimmingCharacters(in: .whitespacesAndNewlines), !template.isEmpty else {
             throw ExecutorError.validationFailed("Specifica un template con '#' come segnaposto del numero, es. 'vacanza_#.jpg'.")
@@ -128,8 +82,8 @@ final class RenameFilesAction: ActionExecutor {
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let files = FileResolver.resolveInputURLs(step: step, context: context)
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = try InputResolver.resolve(step: step, context: context)
         guard let directory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
@@ -145,50 +99,71 @@ final class RenameFilesAction: ActionExecutor {
             templateExt = String(template[template.index(after: dotIndex)...])
         }
         
-        var renamedFiles: [URL] = []
-        var backupURLs: [URL: URL] = [:]
-        
-        let backupDir = try BackupStore.newBackupDirectory()
-        
-        for (index, file) in files.enumerated() {
-            let numberString = String(index + 1)
-            let newBaseName = templateBase.replacingOccurrences(of: "#", with: numberString)
+        let mappings = files.enumerated().map { index, file in
+            let base = templateBase.replacingOccurrences(of: "#", with: String(index + 1))
             let ext = templateExt ?? file.pathExtension
-            
-            let newFileName = ext.isEmpty ? newBaseName : "\(newBaseName).\(ext)"
-            let targetURL = directory.appendingPathComponent(newFileName)
-            
-            // 1. Back up the SOURCE keyed by its original path so the rollback
-            //    restores it (rename-undo = recreate source; the moved file is
-            //    tracked as a created output and deleted by the rollback).
-            let backupURL = backupDir.appendingPathComponent(file.lastPathComponent)
-            try FileManager.default.copyItem(at: file, to: backupURL)
-            if file.path != targetURL.path {
-                backupURLs[file] = backupURL
-            }
-            
-            // 2. If an existing file would be overwritten, back THAT up too:
-            //    after rollback deletes the renamed output, the original target
-            //    is restored from this backup (no data loss).
-            if file.path != targetURL.path, FileManager.default.fileExists(atPath: targetURL.path) {
-                let targetBackup = backupDir.appendingPathComponent("overwritten_" + targetURL.lastPathComponent)
-                try FileManager.default.copyItem(at: targetURL, to: targetBackup)
-                backupURLs[targetURL] = targetBackup
-                try FileManager.default.removeItem(at: targetURL)
-            }
-            
-            if file.path != targetURL.path {
-                try FileManager.default.moveItem(at: file, to: targetURL)
-            }
-            renamedFiles.append(targetURL)
+            return (source: file, target: directory.appendingPathComponent(ext.isEmpty ? base : "\(base).\(ext)"))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: renamedFiles,
-            message: "Rinominati \(renamedFiles.count) file con il template '\(template)'",
-            backupURLs: backupURLs
-        )
+        return try await Self.rename(mappings, progress: progress)
+    }
+
+    /// Targets are resolved before any mutation so overlapping names cannot consume a later source.
+    static func rename(_ mappings: [(source: URL, target: URL)], progress: ItemProgressCallback? = nil) async throws -> ActionResult {
+        var outputs: [URL] = []
+        var backups: [URL: URL] = [:]
+        do {
+            var targets = Set<URL>()
+            var sources = Set<URL>()
+            for mapping in mappings {
+                guard targets.insert(mapping.target.standardizedFileURL).inserted,
+                      sources.insert(mapping.source.standardizedFileURL).inserted else {
+                    throw ExecutorError.validationFailed("La rinomina contiene sorgenti o destinazioni duplicate.")
+                }
+            }
+            let changes = mappings.filter { $0.source.standardizedFileURL != $0.target.standardizedFileURL }
+            guard !changes.isEmpty else {
+                return ActionResult(success: true, outputFiles: [], message: "Nessun nome da modificare.")
+            }
+            let fm = FileManager.default
+            try Task.checkCancellation()
+            let backupDir = try BackupStore.newBackupDirectory()
+            let changedSources = Set(changes.map { $0.source.standardizedFileURL })
+            let externalTargets = Set(changes.map(\.target).filter {
+                !changedSources.contains($0.standardizedFileURL) && fm.fileExists(atPath: $0.path)
+            })
+            for original in changes.map(\.source) + Array(externalTargets) where backups[original] == nil {
+                try Task.checkCancellation()
+                let backup = backupDir.appendingPathComponent(UUID().uuidString)
+                outputs.append(backup)
+                try fm.copyItem(at: original, to: backup)
+                backups[original] = backup
+                outputs.removeAll { $0 == backup }
+            }
+            var staged: [(temporary: URL, target: URL)] = []
+            for (index, mapping) in changes.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, changes.count, "Rinomina: \(mapping.source.lastPathComponent)")
+                try Task.checkCancellation()
+                let temporary = mapping.source.deletingLastPathComponent().appendingPathComponent(".atlas-rename-\(UUID().uuidString)")
+                try fm.moveItem(at: mapping.source, to: temporary)
+                outputs.append(temporary)
+                staged.append((temporary, mapping.target))
+            }
+            for item in staged {
+                try Task.checkCancellation()
+                if externalTargets.contains(item.target), fm.fileExists(atPath: item.target.path) {
+                    _ = try fm.replaceItemAt(item.target, withItemAt: item.temporary)
+                } else {
+                    // moveItem refuses a destination that appeared after preflight.
+                    try fm.moveItem(at: item.temporary, to: item.target)
+                }
+                outputs.removeAll { $0 == item.temporary }
+                outputs.append(item.target)
+            }
+            return ActionResult(success: true, outputFiles: outputs, message: "Rinominati \(changes.count) file", backupURLs: backups)
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputs, message: nil, backupURLs: backups))
+        }
     }
 }
 
@@ -196,18 +171,20 @@ final class RenameFilesAction: ActionExecutor {
 
 final class ZipFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
+        let files = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
+        guard let directory = context.currentDirectory else {
+            throw ExecutorError.validationFailed("Cartella corrente non disponibile.")
+        }
+        _ = try Self.sourcePlan(files: files, directory: directory)
     }
-    
+
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
-        let files = FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true)
-        guard let directory = context.currentDirectory, !files.isEmpty else { return nil }
+        guard let files = try? InputResolver.resolve(step: step, context: context, allowDirectories: true),
+              let directory = context.currentDirectory,
+              let plan = try? Self.sourcePlan(files: files, directory: directory) else { return nil }
         let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ".zip", with: "") ?? "archive"
         let archiveURL = FileResolver.uniqueURL(in: directory, baseName: rawName, extensionName: "zip")
-        // La stringa è solo anteprima, ma deve restare un comando zsh valido:
-        // spazi/apici/metacaratteri nei nomi file vanno quotati.
-        let quotedFiles = files.map { Self.shellQuote($0.lastPathComponent) }.joined(separator: " ")
-        return ["cd \(Self.shellQuote(directory.path)) && zip -r \(Self.shellQuote(archiveURL.lastPathComponent)) \(quotedFiles)"]
+        return Self.preview(plan: plan, archiveURL: archiveURL)
     }
 
     /// Quoting per shell POSIX: singoli apici con escape del carattere '.
@@ -215,9 +192,112 @@ final class ZipFilesAction: ActionExecutor {
     static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
+
+    struct SourcePlan {
+        let directory: URL
+        let localPaths: [String]
+        let externalFiles: [URL]
+        let stagingDirectory: URL
+    }
+
+    static func sourcePlan(files: [URL], directory: URL) throws -> SourcePlan {
+        let root = directory.standardizedFileURL.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        var localPaths: [String] = []
+        var externalFiles: [URL] = []
+        for file in files {
+            let path = file.standardizedFileURL.path
+            if path.hasPrefix(prefix) {
+                localPaths.append("./" + String(path.dropFirst(prefix.count)))
+            } else if path == root {
+                // An archive created in this directory must not recursively include itself.
+                throw ExecutorError.validationFailed("Non è possibile archiviare la cartella corrente al suo interno.")
+            } else {
+                externalFiles.append(file)
+            }
+        }
+        if !externalFiles.isEmpty {
+            var basenames = Set<String>()
+            for file in files {
+                guard basenames.insert(file.lastPathComponent).inserted else {
+                    throw ExecutorError.validationFailed("Nomi duplicati negli input ZIP: \(file.lastPathComponent)")
+                }
+            }
+            for file in externalFiles {
+                let member = "./" + file.lastPathComponent
+                guard !localPaths.contains(where: { $0 == member || $0.hasPrefix(member + "/") || member.hasPrefix($0 + "/") }) else {
+                    throw ExecutorError.validationFailed("Percorsi sovrapposti negli input ZIP: \(file.lastPathComponent)")
+                }
+            }
+        }
+        return SourcePlan(
+            directory: directory,
+            localPaths: localPaths,
+            externalFiles: externalFiles,
+            stagingDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+    }
+
+    static func arguments(archiveURL: URL, paths: [String]) -> [String] {
+        ["-r", archiveURL.path] + paths
+    }
+
+    private static func groups(for plan: SourcePlan) -> [(directory: URL, paths: [String])] {
+        var groups: [(directory: URL, paths: [String])] = []
+        if !plan.localPaths.isEmpty { groups.append((plan.directory, plan.localPaths)) }
+        if !plan.externalFiles.isEmpty {
+            groups.append((plan.stagingDirectory, plan.externalFiles.map { "./" + $0.lastPathComponent }))
+        }
+        return groups
+    }
+
+    static func preview(plan: SourcePlan, archiveURL: URL) -> [String] {
+        var commands: [String] = []
+        if !plan.externalFiles.isEmpty {
+            commands.append("/bin/mkdir \(shellQuote(plan.stagingDirectory.path))")
+            commands += plan.externalFiles.map {
+                "/bin/cp -R \(shellQuote($0.path)) \(shellQuote(plan.stagingDirectory.appendingPathComponent($0.lastPathComponent).path))"
+            }
+        }
+        commands += groups(for: plan).map {
+            "(cd \(shellQuote($0.directory.path)) && /usr/bin/zip " + arguments(archiveURL: archiveURL, paths: $0.paths).map(shellQuote).joined(separator: " ") + ")"
+        }
+        if !plan.externalFiles.isEmpty {
+            commands.append("/bin/rm -rf \(shellQuote(plan.stagingDirectory.path))")
+        }
+        return commands
+    }
+
+    static func createArchive(plan: SourcePlan, archiveURL: URL) async throws {
+        let fm = FileManager.default
+        var ownsStaging = false
+        defer {
+            if ownsStaging { try? fm.removeItem(at: plan.stagingDirectory) }
+        }
+        if !plan.externalFiles.isEmpty {
+            try Task.checkCancellation()
+            try fm.createDirectory(at: plan.stagingDirectory, withIntermediateDirectories: false)
+            ownsStaging = true
+            for file in plan.externalFiles {
+                try Task.checkCancellation()
+                try fm.copyItem(at: file, to: plan.stagingDirectory.appendingPathComponent(file.lastPathComponent))
+            }
+        }
+        for group in groups(for: plan) {
+            try Task.checkCancellation()
+            let result = try await AsyncProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/zip"),
+                arguments: arguments(archiveURL: archiveURL, paths: group.paths),
+                currentDirectoryURL: group.directory
+            )
+            guard result.isSuccess, fm.fileExists(atPath: archiveURL.path) else {
+                throw ExecutorError.executionFailed("Creazione dell'archivio ZIP fallita: \(result.stderr)")
+            }
+        }
+    }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let files = FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true)
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
         guard let directory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
@@ -227,23 +307,17 @@ final class ZipFilesAction: ActionExecutor {
         
         let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ".zip", with: "") ?? "archive"
         let archiveURL = FileResolver.uniqueURL(in: directory, baseName: rawName, extensionName: "zip")
-        let relativePaths = files.map { $0.lastPathComponent }
+        let plan = try Self.sourcePlan(files: files, directory: directory)
         
-        let result = try await AsyncProcessRunner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/zip"),
-            arguments: ["-r", archiveURL.path] + relativePaths,
-            currentDirectoryURL: directory
-        )
-        
-        guard result.isSuccess, FileManager.default.fileExists(atPath: archiveURL.path) else {
-            throw ExecutorError.executionFailed("Creazione dell'archivio ZIP fallita: \(result.stderr)")
+        var outputs: [URL] = []
+        do {
+            try await StagedOutput.write(to: archiveURL, journal: &outputs) { temporary in
+                try await Self.createArchive(plan: plan, archiveURL: temporary)
+            }
+            return ActionResult(success: true, outputFiles: outputs, message: "Creato \(archiveURL.lastPathComponent) con \(files.count) elementi")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputs, message: nil))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: [archiveURL],
-            message: "Creato \(archiveURL.lastPathComponent) con \(files.count) elementi"
-        )
     }
 }
 
@@ -251,42 +325,58 @@ final class ZipFilesAction: ActionExecutor {
 
 final class CompressFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
+        try ZipFilesAction().validate(step: step, context: context)
+    }
+
+    func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
+        guard let files = try? InputResolver.resolve(step: step, context: context, allowDirectories: true),
+              let directory = context.currentDirectory,
+              (try? ZipFilesAction.sourcePlan(files: files, directory: directory)) != nil else { return nil }
+        var reserved = Set<URL>()
+        var commands: [String] = []
+        for file in files {
+            guard let plan = try? ZipFilesAction.sourcePlan(files: [file], directory: directory) else { return nil }
+            let baseName = file.deletingPathExtension().lastPathComponent
+            var archiveURL = FileResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "zip")
+            var suffix = 2
+            while reserved.contains(archiveURL) || FileManager.default.fileExists(atPath: archiveURL.path) {
+                archiveURL = directory.appendingPathComponent("\(baseName)-\(suffix).zip")
+                suffix += 1
+            }
+            reserved.insert(archiveURL)
+            commands += ZipFilesAction.preview(plan: plan, archiveURL: archiveURL)
+        }
+        return commands
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let files = FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true)
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        let files = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
         guard let directory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
         guard !files.isEmpty else {
             return ActionResult(success: true, outputFiles: [], message: "Nessun elemento da comprimere.")
         }
+        // Reject ambiguous external basenames before creating any per-item archive.
+        _ = try ZipFilesAction.sourcePlan(files: files, directory: directory)
         
         var outputFiles: [URL] = []
         
-        for file in files {
-            let baseName = file.deletingPathExtension().lastPathComponent
-            let archiveURL = FileResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "zip")
-            let fileRelPath = file.lastPathComponent
-            
-            let result = try await AsyncProcessRunner.run(
-                executableURL: URL(fileURLWithPath: "/usr/bin/zip"),
-                arguments: ["-r", "-q", archiveURL.path, fileRelPath],
-                currentDirectoryURL: directory
-            )
-            
-            guard result.isSuccess, FileManager.default.fileExists(atPath: archiveURL.path) else {
-                throw ExecutorError.executionFailed("Compressione fallita per \(file.lastPathComponent): \(result.stderr)")
+        do {
+            for (index, file) in files.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, files.count, "Compressione: \(file.lastPathComponent)")
+                let baseName = file.deletingPathExtension().lastPathComponent
+                let archiveURL = FileResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "zip")
+                let plan = try ZipFilesAction.sourcePlan(files: [file], directory: directory)
+                try await StagedOutput.write(to: archiveURL, journal: &outputFiles) { temporary in
+                    try await ZipFilesAction.createArchive(plan: plan, archiveURL: temporary)
+                }
             }
-            outputFiles.append(archiveURL)
+            return ActionResult(success: true, outputFiles: outputFiles, message: "Creati \(outputFiles.count) archivi ZIP")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: outputFiles,
-            message: "Creati \(outputFiles.count) archivi ZIP"
-        )
     }
 }
 
@@ -379,28 +469,20 @@ enum FinderSelector {
 
 final class SelectFilesAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        guard let currentDirectory = context.currentDirectory else {
-            throw ExecutorError.validationFailed("Cartella corrente non disponibile.")
-        }
-        let targetFiles = resolveTargetFiles(step: step, directory: currentDirectory)
-        guard !targetFiles.isEmpty else {
-            throw ExecutorError.validationFailed("Nessun file trovato da selezionare nella cartella corrente.")
-        }
+        _ = try resolveTargetFiles(step: step, context: context)
     }
     
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
-        guard let currentDirectory = context.currentDirectory else { return nil }
-        let targetFiles = resolveTargetFiles(step: step, directory: currentDirectory)
-        guard !targetFiles.isEmpty else { return nil }
+        guard let targetFiles = try? resolveTargetFiles(step: step, context: context) else { return nil }
         return ["open -R \(targetFiles.map { "'\($0.path)'" }.joined(separator: " "))"]
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         guard let currentDirectory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
         
-        let targetFiles = resolveTargetFiles(step: step, directory: currentDirectory)
+        let targetFiles = try resolveTargetFiles(step: step, context: context)
         print("[Atlas][Select] execute dir=\(currentDirectory.path) targetFiles=\(targetFiles.count) inputs=\(step.inputs.count) format=\(step.format ?? "nil")")
         guard !targetFiles.isEmpty else {
             print("[Atlas][Select] ⚠️ 0 file risolti — selezione vuota")
@@ -409,6 +491,7 @@ final class SelectFilesAction: ActionExecutor {
         
         // La selezione non crea file: outputFiles vuoto per evitare migliaia di
         // righe in OutputFilesView e l'API nativa che crasha con liste enormi.
+        try Task.checkCancellation()
         await FinderSelector.select(urls: targetFiles)
         
         return ActionResult(
@@ -418,29 +501,11 @@ final class SelectFilesAction: ActionExecutor {
         )
     }
     
-    private func resolveTargetFiles(step: ActionStep, directory: URL) -> [URL] {
-        let formatFilter = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        
-        let initialURLs: [URL]
-        if !step.inputs.isEmpty {
-            initialURLs = step.inputs.compactMap { inputPath in
-                let url = directory.appendingPathComponent(inputPath)
-                return FileManager.default.fileExists(atPath: url.path) ? url : nil
-            }
-        } else {
-            guard let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-                return []
-            }
-            initialURLs = contents
-        }
-        
-        // Filter by format extension if format is specified (e.g. 'webp', 'jpg', 'pdf')
-        if let targetExt = formatFilter, !targetExt.isEmpty {
-            let cleanExt = targetExt.replacingOccurrences(of: ".", with: "")
-            return initialURLs.filter { $0.pathExtension.lowercased() == cleanExt }
-        }
-        
-        return initialURLs
+    private func resolveTargetFiles(step: ActionStep, context: FinderContext) throws -> [URL] {
+        let format = step.format?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: ".", with: "")
+        let extensions: Set<String>? = format.flatMap { $0.isEmpty ? nil : Set([$0]) }
+        return try InputResolver.resolve(step: step, context: context, extensions: extensions, allowDirectories: extensions == nil)
     }
 }
 
@@ -450,17 +515,14 @@ final class CopyFilesAction: ActionExecutor {
     private static let maxCopies = 100
     
     func validate(step: ActionStep, context: FinderContext) throws {
-        let files = FileResolver.resolveInputURLs(step: step, context: context)
-        guard !files.isEmpty else {
-            throw ExecutorError.validationFailed("Nessun file trovato da copiare.")
-        }
+        _ = try InputResolver.resolve(step: step, context: context)
         guard let count = Self.parseCopyCount(from: step.format), count > 0, count <= Self.maxCopies else {
             throw ExecutorError.validationFailed("Specifica il numero di copie nel campo 'format' (es. '7' o '7;backup').")
         }
     }
     
     func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
-        let files = FileResolver.resolveInputURLs(step: step, context: context)
+        let files = try InputResolver.resolve(step: step, context: context)
         guard let currentDirectory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
         }
@@ -473,29 +535,51 @@ final class CopyFilesAction: ActionExecutor {
         
         let folderName = Self.folderName(from: step.format) ?? "copie"
         let targetFolder = currentDirectory.appendingPathComponent(folderName, isDirectory: true)
-        try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
-        
         var created: [URL] = []
-        let totalCopies = files.count * copyCount
+        var stagedFiles: [URL] = []
+        do {
+            if FileManager.default.fileExists(atPath: targetFolder.path) {
+                try await Self.copy(files, count: copyCount, into: targetFolder, journal: &created, progress: progress)
+            } else {
+                // Publish the whole newly-created directory tree only after every copy succeeds.
+                var newRoot = targetFolder
+                var subfolders: [String] = []
+                while !FileManager.default.fileExists(atPath: newRoot.deletingLastPathComponent().path) {
+                    subfolders.insert(newRoot.lastPathComponent, at: 0)
+                    newRoot = newRoot.deletingLastPathComponent()
+                }
+                try await StagedOutput.write(to: newRoot, journal: &created) { temporary in
+                    try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+                    let workingFolder = subfolders.reduce(temporary) { $0.appendingPathComponent($1, isDirectory: true) }
+                    if !subfolders.isEmpty {
+                        try FileManager.default.createDirectory(at: workingFolder, withIntermediateDirectories: true)
+                    }
+                    try await Self.copy(files, count: copyCount, into: workingFolder, journal: &stagedFiles, progress: progress)
+                }
+                created.append(contentsOf: stagedFiles.map { targetFolder.appendingPathComponent($0.lastPathComponent) })
+            }
+            return ActionResult(success: true, outputFiles: created, message: "Create \(files.count * copyCount) copie di \(files.count) file nella cartella '\(folderName)'")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: created + stagedFiles, message: nil))
+        }
+    }
+
+    private static func copy(_ files: [URL], count: Int, into folder: URL, journal: inout [URL], progress: ItemProgressCallback?) async throws {
         var completed = 0
-        
         for file in files {
+            try Task.checkCancellation()
             let base = file.deletingPathExtension().lastPathComponent
             let ext = file.pathExtension
-            for copyIndex in 1...copyCount {
+            for copyIndex in 1...count {
+                try Task.checkCancellation()
                 completed += 1
-                progress?(completed, totalCopies, "Copia \(copyIndex)/\(copyCount) di \(file.lastPathComponent)")
-                let targetURL = FileResolver.uniqueURL(in: targetFolder, baseName: "\(base)_copia_\(copyIndex)", extensionName: ext)
-                try FileManager.default.copyItem(at: file, to: targetURL)
-                created.append(targetURL)
+                progress?(completed, files.count * count, "Copia \(copyIndex)/\(count) di \(file.lastPathComponent)")
+                let target = FileResolver.uniqueURL(in: folder, baseName: "\(base)_copia_\(copyIndex)", extensionName: ext)
+                try await StagedOutput.write(to: target, journal: &journal) { temporary in
+                    try FileManager.default.copyItem(at: file, to: temporary)
+                }
             }
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: created,
-            message: "Create \(created.count) copie di \(files.count) file nella cartella '\(folderName)'"
-        )
     }
     
     private static func parseCopyCount(from format: String?) -> Int? {
@@ -517,38 +601,45 @@ final class CopyFilesAction: ActionExecutor {
 // MARK: - Safe Trash Files Action
 
 final class TrashFilesAction: ActionExecutor {    func validate(step: ActionStep, context: FinderContext) throws {
-        try FileResolver.validateNonEmpty(step: step, context: context, allowDirectories: true)
+        _ = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
     }
     
     func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
-        let files = FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true)
+        let files = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
         guard !files.isEmpty else {
             return ActionResult(success: true, outputFiles: [], message: "Nessun elemento da spostare nel Cestino.")
         }
         
         var trashedCount = 0
         var backupURLs: [URL: URL] = [:]
-        
-        for (index, file) in files.enumerated() {
-            progress?(index + 1, files.count, "Spostamento nel Cestino: \(file.lastPathComponent)")
-            var resultingURL: NSURL?
-            do {
-                try FileManager.default.trashItem(at: file, resultingItemURL: &resultingURL)
-                trashedCount += 1
-                if let newTrashURL = resultingURL as URL? {
-                    backupURLs[file] = newTrashURL
+        var outputs: [URL] = []
+        do {
+            try Task.checkCancellation()
+            let backupDir = try BackupStore.newBackupDirectory()
+            for (index, file) in files.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, files.count, "Spostamento nel Cestino: \(file.lastPathComponent)")
+                try Task.checkCancellation()
+                let backup = backupDir.appendingPathComponent(UUID().uuidString)
+                outputs.append(backup)
+                try FileManager.default.copyItem(at: file, to: backup)
+                backupURLs[file] = backup
+                outputs.removeAll { $0 == backup }
+                try Task.checkCancellation()
+                var resultingURL: NSURL?
+                do {
+                    try FileManager.default.trashItem(at: file, resultingItemURL: &resultingURL)
+                } catch {
+                    if let trashURL = resultingURL as URL? { outputs.append(trashURL) }
+                    throw error
                 }
-            } catch {
-                throw ExecutorError.executionFailed("Impossibile spostare '\(file.lastPathComponent)' nel Cestino: \(error.localizedDescription)")
+                if let trashURL = resultingURL as URL? { outputs.append(trashURL) }
+                trashedCount += 1
             }
+            return ActionResult(success: true, outputFiles: outputs, message: "Spostati \(trashedCount) elementi nel Cestino di macOS", backupURLs: backupURLs)
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputs, message: nil, backupURLs: backupURLs))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: [],
-            message: "Spostati \(trashedCount) elementi nel Cestino di macOS",
-            backupURLs: backupURLs
-        )
     }
 }
 

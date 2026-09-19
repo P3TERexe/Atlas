@@ -4,6 +4,7 @@ enum TransactionStatus: String, Codable {
     case executing
     case success
     case failed
+    case rollbackFailed
     case rolledBack
 }
 
@@ -21,6 +22,28 @@ struct RollbackError: Error, LocalizedError {
     }
 }
 
+protocol RollbackFileOperations {
+    func copyItem(at source: URL, to destination: URL) throws
+    func replaceItem(at original: URL, with replacement: URL) throws
+    func moveItem(at source: URL, to destination: URL) throws
+    func removeItem(at url: URL) throws
+    func fileExists(at url: URL) -> Bool
+}
+
+struct FoundationRollbackFileOperations: RollbackFileOperations {
+    func copyItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.copyItem(at: source, to: destination)
+    }
+    func replaceItem(at original: URL, with replacement: URL) throws {
+        _ = try FileManager.default.replaceItemAt(original, withItemAt: replacement, backupItemName: nil, options: [])
+    }
+    func moveItem(at source: URL, to destination: URL) throws {
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+    func removeItem(at url: URL) throws { try FileManager.default.removeItem(at: url) }
+    func fileExists(at url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+}
+
 /// Records a full filesystem operation for rollback and history purposes.
 /// Named `AtlasTransaction` to avoid colliding with `SwiftUI.Transaction`.
 struct AtlasTransaction: Codable, Identifiable {
@@ -34,6 +57,7 @@ struct AtlasTransaction: Codable, Identifiable {
     var status: TransactionStatus = .executing
     var startedAt: Date = Date()
     var completedAt: Date?
+    var undoSupported = true
     
     init(steps: [ActionStep]) {
         self.id = UUID()
@@ -46,6 +70,7 @@ struct AtlasTransaction: Codable, Identifiable {
     
     private enum CodingKeys: String, CodingKey {
         case id, steps, backupURLs, createdURLs, query, summary, resultMessage, status, startedAt, completedAt
+        case undoSupported
     }
     
     init(from decoder: Decoder) throws {
@@ -59,6 +84,7 @@ struct AtlasTransaction: Codable, Identifiable {
         status = try c.decodeIfPresent(TransactionStatus.self, forKey: .status) ?? .executing
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        undoSupported = try c.decodeIfPresent(Bool.self, forKey: .undoSupported) ?? true
         
         var decodedBackups: [URL: URL] = [:]
         if let pairs = try c.decodeIfPresent([[String: String]].self, forKey: .backupURLs) {
@@ -83,6 +109,7 @@ struct AtlasTransaction: Codable, Identifiable {
         try c.encode(status, forKey: .status)
         try c.encode(startedAt, forKey: .startedAt)
         try c.encodeIfPresent(completedAt, forKey: .completedAt)
+        try c.encode(undoSupported, forKey: .undoSupported)
     }
     
     var toolNames: [String] {
@@ -96,65 +123,105 @@ struct AtlasTransaction: Codable, Identifiable {
     mutating func addCreated(url: URL) {
         createdURLs.append(url)
     }
+
+    mutating func incorporate(_ result: ActionResult) {
+        undoSupported = undoSupported && result.undoSupported
+        let previouslyCreated = Set(createdURLs)
+        for (original, backup) in result.backupURLs {
+            if backupURLs[original] == nil && !previouslyCreated.contains(original) {
+                backupURLs[original] = backup
+            }
+        }
+        let retained = Set(backupURLs.values)
+        for backup in Set(result.backupURLs.values) where !retained.contains(backup) {
+            try? FileManager.default.removeItem(at: backup)
+        }
+        var known = Set(createdURLs)
+        for output in result.outputFiles where known.insert(output).inserted {
+            createdURLs.append(output)
+        }
+        resultMessage = result.message ?? resultMessage
+    }
     
-    /// Rolls back the transaction. Mutates `status` so a second invocation is
-    /// rejected instead of silently re-running a partial restore.
+    var canRollback: Bool {
+        guard undoSupported else { return false }
+        switch status {
+        case .success, .failed, .rollbackFailed:
+            return !createdURLs.isEmpty || !backupURLs.isEmpty
+        case .executing, .rolledBack:
+            return false
+        }
+    }
+
+    static func restoreBackup(original: URL, backup: URL) throws {
+        try restoreBackup(original: original, backup: backup, fileOperations: FoundationRollbackFileOperations())
+    }
+
+    private static func restoreBackup(original: URL, backup: URL, fileOperations: any RollbackFileOperations) throws {
+        guard fileOperations.fileExists(at: backup) else {
+            throw RollbackError(failures: ["Backup mancante per \(original.path) (\(backup.path))"])
+        }
+        let temporary = original.deletingLastPathComponent().appendingPathComponent(".atlas-restore-\(UUID().uuidString)")
+        defer {
+            if fileOperations.fileExists(at: temporary) { try? fileOperations.removeItem(at: temporary) }
+        }
+        try fileOperations.copyItem(at: backup, to: temporary)
+        if fileOperations.fileExists(at: original) {
+            try fileOperations.replaceItem(at: original, with: temporary)
+        } else {
+            try fileOperations.moveItem(at: temporary, to: original)
+        }
+        // Recovery succeeded. A cleanup failure leaves only an orphan backup.
+        try? fileOperations.removeItem(at: backup)
+    }
+
+    /// Retains only unfinished recovery operations so failed rollback can be retried.
     @discardableResult
-    mutating func rollback() throws -> RollbackResult {
+    mutating func rollback(fileOperations: any RollbackFileOperations = FoundationRollbackFileOperations()) throws -> RollbackResult {
         guard status != .rolledBack else {
             throw RollbackError(failures: ["La transazione \(id.uuidString) è già stata annullata."])
         }
-        status = .rolledBack
-        completedAt = completedAt ?? Date()
-        
-        let fm = FileManager.default
         var deleted = 0
         var restored = 0
         var failures: [String] = []
-        
-        // 1. Delete files created by this transaction
-        for url in createdURLs {
-            if fm.fileExists(atPath: url.path) {
-                do {
-                    try fm.removeItem(at: url)
+        var seen = Set<URL>()
+        createdURLs = createdURLs.filter { seen.insert($0).inserted }
+        let created = createdURLs
+        let backups = backupURLs
+        let parents = Set(backups.values.map { $0.deletingLastPathComponent().standardizedFileURL })
+
+        for url in created where backups[url] == nil {
+            do {
+                if fileOperations.fileExists(at: url) {
+                    try fileOperations.removeItem(at: url)
                     deleted += 1
-                } catch {
-                    failures.append("Eliminazione di \(url.path): \(error.localizedDescription)")
                 }
+                createdURLs.removeAll { $0 == url }
+            } catch {
+                failures.append("Eliminazione di \(url.path): \(error.localizedDescription)")
             }
         }
-        
-        // 2. Restore files that were backed up
-        for (original, backup) in backupURLs {
-            if fm.fileExists(atPath: backup.path) {
-                do {
-                    if fm.fileExists(atPath: original.path) {
-                        try fm.removeItem(at: original)
-                    }
-                    try fm.moveItem(at: backup, to: original)
-                    restored += 1
-                } catch {
-                    failures.append("Ripristino di \(original.path): \(error.localizedDescription)")
-                }
-            } else {
-                failures.append("Backup mancante per \(original.path) (\(backup.path))")
+        for (original, backup) in backups {
+            do {
+                try Self.restoreBackup(original: original, backup: backup, fileOperations: fileOperations)
+                backupURLs.removeValue(forKey: original)
+                createdURLs.removeAll { $0 == original }
+                restored += 1
+            } catch {
+                failures.append("Ripristino di \(original.path): \(error.localizedDescription)")
             }
         }
-        
+        for directory in parents {
+            guard !backupURLs.values.contains(where: { $0.deletingLastPathComponent().standardizedFileURL == directory }) else { continue }
+            if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+                try? fileOperations.removeItem(at: directory)
+            }
+        }
         if !failures.isEmpty {
+            status = .rollbackFailed
             throw RollbackError(failures: failures)
         }
-        
-        // 3. Remove backup directories this rollback emptied, so persistent
-        //    storage does not accumulate empty per-execution folders. Only
-        //    verified-empty directories are removed (never recursive).
-        let parentDirs = Set(backupURLs.values.map { $0.deletingLastPathComponent().standardizedFileURL })
-        for dir in parentDirs {
-            if (try? fm.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
-                try? fm.removeItem(at: dir)
-            }
-        }
-        
+        status = .rolledBack
         return RollbackResult(deletedFilesCount: deleted, restoredFilesCount: restored)
     }
 }

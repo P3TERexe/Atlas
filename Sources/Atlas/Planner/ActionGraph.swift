@@ -16,28 +16,15 @@ struct ActionGraph: Codable, Sendable, Generable {
 
     init(from decoder: Decoder) throws {
         if let container = try? decoder.container(keyedBy: CodingKeys.self) {
-            if let steps = try? container.decode([ActionStep].self, forKey: .steps) {
-                self.steps = steps
+            for key in [CodingKeys.steps, .actionGraph, .graph] where container.contains(key) {
+                self.steps = try container.decode([ActionStep].self, forKey: key)
                 return
             }
-            if let steps = try? container.decode([ActionStep].self, forKey: .actionGraph) {
-                self.steps = steps
-                return
-            }
-            if let steps = try? container.decode([ActionStep].self, forKey: .graph) {
-                self.steps = steps
-                return
-            }
+            self.steps = try container.decode([ActionStep].self, forKey: .steps)
+        } else {
+            let container = try decoder.singleValueContainer()
+            self.steps = try container.decode([ActionStep].self)
         }
-        
-        if let singleContainer = try? decoder.singleValueContainer(),
-           let steps = try? singleContainer.decode([ActionStep].self) {
-            self.steps = steps
-            return
-        }
-        
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.steps = try container.decode([ActionStep].self, forKey: .steps)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -178,24 +165,20 @@ struct ActionStep: Codable, Sendable, Generable {
         self.id = try container.decode(String.self, forKey: .id)
         self.tool = try container.decode(String.self, forKey: .tool)
         
-        if let inputArray = try? container.decode([String].self, forKey: .inputs) {
-            self.inputs = inputArray
-        } else if let singleInput = try? container.decode(String.self, forKey: .inputs) {
+        if let singleInput = try? container.decode(String.self, forKey: .inputs) {
             self.inputs = [singleInput]
         } else {
-            self.inputs = []
+            self.inputs = try container.decode([String].self, forKey: .inputs)
         }
-        
-        self.format = try? container.decode(String.self, forKey: .format)
-        self.grayscale = try? container.decode(Bool.self, forKey: .grayscale)
-        self.quality = try? container.decode(Int.self, forKey: .quality)
-        
-        if let depArray = try? container.decode([String].self, forKey: .dependsOn) {
-            self.dependsOn = depArray
-        } else if let singleDep = try? container.decode(String.self, forKey: .dependsOn) {
+
+        self.format = try container.decodeIfPresent(String.self, forKey: .format)
+        self.grayscale = try container.decodeIfPresent(Bool.self, forKey: .grayscale)
+        self.quality = try container.decodeIfPresent(Int.self, forKey: .quality)
+
+        if let singleDep = try? container.decode(String.self, forKey: .dependsOn) {
             self.dependsOn = [singleDep]
         } else {
-            self.dependsOn = nil
+            self.dependsOn = try container.decodeIfPresent([String].self, forKey: .dependsOn)
         }
     }
 
@@ -210,10 +193,11 @@ struct ActionStep: Codable, Sendable, Generable {
         self.dependsOn = dependsOn
     }
     
-    /// Output filename for an input (same directory), e.g. "foto.png" → "foto.jpg".
-    /// Returns the input unchanged when no output format is set.
+    /// Declared extension-conversion output; other tools do not declare a filename here.
+    /// Returning the input unchanged means no distinct output can be predicted.
     func outputName(for input: String) -> String {
-        guard let format else { return input }
+        guard ["image.convert", "video.convert", "video.extractAudio"].contains(tool),
+              let format, !format.isEmpty, !format.contains("/"), !format.contains(".") else { return input }
         return (input as NSString).deletingPathExtension + "." + format
     }
 }

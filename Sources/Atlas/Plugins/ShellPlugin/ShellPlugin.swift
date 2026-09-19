@@ -38,7 +38,7 @@ final class CalcShellAction: ActionExecutor {
         return ["echo \"\(cleanExpr)\" | bc -l"]
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         let rawExpr = step.format ?? step.inputs.joined(separator: " ")
         let expr = Self.sanitizeBcExpression(rawExpr)
         
@@ -70,26 +70,22 @@ final class CalcShellAction: ActionExecutor {
             s = regex.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "*")
         }
         
-        // Handle ALL percent patterns like "15%" -> "(0.15)" FIRST, so the
-        // phrase replacements below can no longer consume the '%' sign.
-        if let regex = try? NSRegularExpression(pattern: "(\\d+(?:\\.\\d+)?)\\s*%") {
-            var result = ""
-            var cursor = s.startIndex
-            regex.enumerateMatches(in: s, range: NSRange(s.startIndex..., in: s)) { match, _, _ in
-                guard let match, let numRange = Range(match.range(at: 1), in: s),
-                      let val = Double(s[numRange]),
-                      let fullRange = Range(match.range, in: s) else { return }
-                result += s[cursor..<fullRange.lowerBound] + "(\(val / 100.0))"
-                cursor = fullRange.upperBound
-            }
-            result += s[cursor...]
-            s = result
+        // Consume the complete numeric phrase before isolated percentages.
+        // Keep division in bc rather than rounding through a Double.
+        let number = "([+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+))"
+        let phrase = "^\\s*" + number + "\\s*(?:%\\s*(?:of|di)|(?:percent of|per cento di))\\s*" + number + "\\s*$"
+        if let regex = try? NSRegularExpression(pattern: phrase),
+           regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil {
+            return regex.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "($1/100)*($2)")
         }
-        
-        // Phrase forms: "15 percent of 80", "15 per cento di 80"
-        s = s.replacingOccurrences(of: " per cento di ", with: " * 0.01 * ")
-            .replacingOccurrences(of: "% of ", with: " * 0.01 * ")
-            .replacingOccurrences(of: "% di ", with: " * 0.01 * ")
+        // Do not reinterpret incomplete or qualified natural-language phrases.
+        if s.range(of: "\\b(?:of|di|percent|per cento)\\b", options: .regularExpression) != nil ||
+            (s.contains("%") && s.range(of: "[A-Za-z]", options: .regularExpression) != nil) {
+            return input
+        }
+        if let regex = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9_.])" + number + "\\s*%") {
+            s = regex.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "($1/100)")
+        }
         
         return s
     }
@@ -273,25 +269,35 @@ extension ShellPlugin {
     /// BackupStore.defaultRoot(). Lettura ampia. Network negato di default;
     /// profilo "online" solo se qualche leader ∈ {curl, wget, ping}.
     static func makeSandboxProfile(workingDir: URL, allowNetwork: Bool) throws -> URL {
-        let tmpDir = FileManager.default.temporaryDirectory.path
-        let backupRoot = BackupStore.defaultRoot().path
-        
-        var profile = """
-        (version 1)(deny default)
-        (allow process-exec (subpath "/usr/bin") (subpath "/bin") (subpath "/opt/homebrew/bin") (subpath "/usr/local/bin") (subpath "/sbin") (subpath "/usr/sbin"))
-        (allow file-read*)
-        (allow file-write* (subpath "\(workingDir.path)") (subpath "\(tmpDir)") (subpath "\(backupRoot)"))
-        (allow process-fork)
-        """
-        if allowNetwork {
-            profile += "\n(allow network*)"
-        }
-        profile += "\n"
+        let profile = sandboxProfileText(
+            writeDirectories: [workingDir, FileManager.default.temporaryDirectory, BackupStore.rootOverride ?? BackupStore.defaultRoot()],
+            allowNetwork: allowNetwork
+        )
         
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atlas-sandbox-\(UUID().uuidString).sbpl")
         try profile.write(to: url, atomically: true, encoding: .utf8)
         return url
+    }
+
+    static func sandboxProfileText(writeDirectories: [URL], allowNetwork: Bool) -> String {
+        let roots = writeDirectories.map { directory in
+            let escapedPath = directory.resolvingSymlinksInPath().path
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+            return "(subpath \"\(escapedPath)\")"
+        }.joined(separator: " ")
+        var profile = """
+        (version 1)(deny default)
+        (allow process-exec (subpath "/usr/bin") (subpath "/bin") (subpath "/opt/homebrew/bin") (subpath "/usr/local/bin") (subpath "/sbin") (subpath "/usr/sbin"))
+        (allow file-read*)
+        (allow file-write* \(roots))
+        (allow process-fork)
+        """
+        if allowNetwork { profile += "\n(allow network*)" }
+        return profile + "\n"
     }
 }
 
@@ -325,42 +331,59 @@ final class GenericShellAction: ActionExecutor {
         }
     }
     
-    /// true se sandbox-exec esiste E applica davvero i filtri (subpath) di
-    /// `file-write*` su questo sistema. Su alcune build recenti di macOS il
-    /// binario c'è ma QUALUNQUE regola di scrittura filtrata nega la
-    /// scrittura anche dentro le root consentite: in quel caso girare sotto
-    /// sandbox romperebbe ogni comando. Rilevato UNA sola volta con un
-    /// canary (scrittura in una directory temporanea) e messo in cache.
-    static let sandboxUsable: Bool = {
-        guard FileManager.default.fileExists(atPath: "/usr/bin/sandbox-exec") else { return false }
+    /// A single off-main probe checks both permitted writes and confinement.
+    /// Callers share its bounded lifetime rather than cancelling each other's probe.
+    private static let sandboxProbe = Task.detached(priority: .utility) { () -> Bool in
         let fm = FileManager.default
-        let dir = fm.temporaryDirectory.appendingPathComponent("atlas-sbx-probe-\(UUID().uuidString)")
-        guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else { return false }
-        defer { try? fm.removeItem(at: dir) }
-        
-        let profileText = """
-        (version 1)(deny default)
-        (allow process-exec (subpath "/bin"))
-        (allow file-read*)
-        (allow file-write* (subpath "\(dir.resolvingSymlinksInPath().path)"))
-        (allow process-fork)
-        """
-        let profile = dir.appendingPathComponent("probe.sbpl")
-        guard (try? profileText.write(to: profile, atomically: true, encoding: .utf8)) != nil else { return false }
-        defer { try? fm.removeItem(at: profile) }
-        
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-        probe.arguments = ["-f", profile.path, "/bin/sh", "-c", ": > out.txt"]
-        probe.currentDirectoryURL = dir
-        probe.standardOutput = Pipe()
-        probe.standardError = Pipe()
-        guard (try? probe.run()) != nil else { return false }
-        probe.waitUntilExit()
-        return probe.terminationStatus == 0 && fm.fileExists(atPath: dir.appendingPathComponent("out.txt").path)
-    }()
+        let sandboxURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+        guard fm.isExecutableFile(atPath: sandboxURL.path) else { return false }
+
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        do {
+            let allowed = root.appendingPathComponent("allowed", isDirectory: true)
+            let denied = root.appendingPathComponent("denied", isDirectory: true)
+            try fm.createDirectory(at: allowed, withIntermediateDirectories: true)
+            try fm.createDirectory(at: denied, withIntermediateDirectories: true)
+            let protectedFile = denied.appendingPathComponent("sentinel.txt")
+            let sentinel = Data("Atlas sandbox probe sentinel".utf8)
+            try sentinel.write(to: protectedFile)
+
+            let profile = root.appendingPathComponent("probe.sbpl")
+            let profileText = ShellPlugin.sandboxProfileText(writeDirectories: [allowed], allowNetwork: false)
+            try profileText.write(to: profile, atomically: true, encoding: .utf8)
+
+            let permitted = try await AsyncProcessRunner.run(
+                executableURL: sandboxURL,
+                arguments: ["-f", profile.path, "/bin/zsh", "-c", "printf atlas > out.txt"],
+                currentDirectoryURL: allowed,
+                timeout: 5
+            )
+            guard permitted.isSuccess,
+                  try Data(contentsOf: allowed.appendingPathComponent("out.txt")) == Data("atlas".utf8) else {
+                return false
+            }
+
+            let prohibited = try await AsyncProcessRunner.run(
+                executableURL: sandboxURL,
+                arguments: ["-f", profile.path, "/bin/zsh", "-c", "printf changed > sentinel.txt"],
+                currentDirectoryURL: denied,
+                timeout: 5
+            )
+            let retainedContent = (try? Data(contentsOf: protectedFile)) ?? Data()
+            return !prohibited.isSuccess && retainedContent == sentinel
+        } catch {
+            return false
+        }
+    }
+
+    static var sandboxUsable: Bool {
+        get async { await sandboxProbe.value }
+    }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        try Task.checkCancellation()
+        try validate(step: step, context: context)
     
         guard let currentDirectory = context.currentDirectory else {
             throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
@@ -368,49 +391,60 @@ final class GenericShellAction: ActionExecutor {
         
         let cmd = step.format ?? step.inputs.joined(separator: " ")
         
-        // Snapshot directory contents before execution
+        // This difference is only for displaying new outputs, not a complete undo journal.
         let beforeFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
         
-        // Sandbox: deny-write fuori dalla cartella di lavoro. Fallback
-        // pre-deciso: senza /usr/bin/sandbox-exec, o su sistemi che ignorano/
-        // negano i filtri di scrittura del profilo (sandboxUsable), si gira
-        // senza sandbox — la allowlist di ShellGuard resta l'unico strato,
-        // nessuna regressione funzionale.
-        let executableURL: URL
-        let arguments: [String]
-        if Self.sandboxUsable {
-            let profile = try ShellPlugin.makeSandboxProfile(
-                workingDir: currentDirectory,
-                allowNetwork: Self.needsNetwork(cmd)
+        var profileURL: URL?
+        defer {
+            if let profileURL { try? FileManager.default.removeItem(at: profileURL) }
+        }
+        let sandboxAvailable = await Self.sandboxUsable
+        try Task.checkCancellation()
+        guard sandboxAvailable else {
+            throw ExecutorError.executionFailed("Esecuzione shell non disponibile: sandbox non efficace su questo sistema.")
+        }
+        let profile = try ShellPlugin.makeSandboxProfile(
+            workingDir: currentDirectory,
+            allowNetwork: Self.needsNetwork(cmd)
+        )
+        profileURL = profile
+        let executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+        let arguments = ["-f", profile.path, "/bin/zsh", "-c", cmd]
+        
+        let undoMessage = "Undo non disponibile per questo comando shell"
+        do {
+            let result = try await AsyncProcessRunner.run(
+                executableURL: executableURL,
+                arguments: arguments,
+                currentDirectoryURL: currentDirectory
             )
-            defer { try? FileManager.default.removeItem(at: profile) }
-            executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            arguments = ["-f", profile.path, "/bin/zsh", "-c", cmd]
-        } else {
-            print("[Atlas][Shell] sandbox non disponibile o non efficace: esecuzione solo con allowlist")
-            executableURL = URL(fileURLWithPath: "/bin/zsh")
-            arguments = ["-c", cmd]
+
+            guard result.isSuccess else {
+                let errorMsg = result.stderr.isEmpty ? result.stdout : result.stderr
+                throw ExecutorError.executionFailed("Comando shell fallito: \(errorMsg.isEmpty ? "Codice uscita \(result.exitCode)" : errorMsg)")
+            }
+
+            let afterFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
+            let createdFiles = Array(afterFiles.subtracting(beforeFiles))
+            let outputMessage = result.stdout.isEmpty ? "Comando eseguito con successo (\(createdFiles.count) nuovi elementi)" : result.stdout
+
+            return ActionResult(
+                success: true,
+                outputFiles: createdFiles,
+                message: "\(outputMessage)\n\(undoMessage)",
+                undoSupported: false
+            )
+        } catch {
+            let afterFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
+            throw ActionExecutionError(
+                underlying: error,
+                partialResult: ActionResult(
+                    success: false,
+                    outputFiles: Array(afterFiles.subtracting(beforeFiles)),
+                    message: undoMessage,
+                    undoSupported: false
+                )
+            )
         }
-        
-        let result = try await AsyncProcessRunner.run(
-            executableURL: executableURL,
-            arguments: arguments,
-            currentDirectoryURL: currentDirectory
-        )
-        
-        guard result.isSuccess else {
-            let errorMsg = result.stderr.isEmpty ? result.stdout : result.stderr
-            throw ExecutorError.executionFailed("Comando shell fallito: \(errorMsg.isEmpty ? "Codice uscita \(result.exitCode)" : errorMsg)")
-        }
-        
-        // Snapshot newly created files/directories
-        let afterFiles = Set((try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil)) ?? [])
-        let createdFiles = Array(afterFiles.subtracting(beforeFiles))
-        
-        return ActionResult(
-            success: true,
-            outputFiles: createdFiles,
-            message: result.stdout.isEmpty ? "Comando eseguito con successo (\(createdFiles.count) nuovi elementi)" : result.stdout
-        )
     }
 }

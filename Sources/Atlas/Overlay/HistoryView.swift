@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HistoryView: View {
     @ObservedObject private var store = HistoryStore.shared
+    @ObservedObject private var undo = AtlasUndoManager.shared
     let onClose: () -> Void
     var onReexecute: ((String) -> Void)? = nil
     
@@ -26,6 +27,9 @@ struct HistoryView: View {
             .padding(12)
             
             Divider()
+            if let error = store.persistenceError ?? undo.rollbackError {
+                Text(error).font(.caption).foregroundColor(.orange).textSelection(.enabled).padding(12)
+            }
             
             if store.transactions.isEmpty {
                 VStack(spacing: 8) {
@@ -96,10 +100,13 @@ private struct HistoryRow: View {
                     .buttonStyle(.plain)
                     .help("Dettagli operazione e comandi")
                     
-                    if transaction.status == .success {
+                    if transaction.canRollback {
                         Button {
-                            if let res = store.rollback(id: transaction.id) {
+                            do {
+                                let res = try store.rollback(id: transaction.id)
                                 rollbackMessage = "Annullata (\(res.deletedFilesCount) eliminati)"
+                            } catch {
+                                rollbackMessage = error.localizedDescription
                             }
                         } label: {
                             Image(systemName: "arrow.uturn.backward")
@@ -132,6 +139,9 @@ private struct HistoryRow: View {
                         .help("Riesegui")
                     }
                 }
+            }
+            if let message = rollbackMessage ?? (transaction.status == .rollbackFailed ? transaction.resultMessage : nil) {
+                Text(message).font(.caption2).foregroundColor(.orange).textSelection(.enabled)
             }
             
             // Expanded details: steps, tool names, inputs, and commands
@@ -167,11 +177,6 @@ private struct HistoryRow: View {
                         .cornerRadius(5)
                     }
                     
-                    if let msg = rollbackMessage {
-                        Text(msg)
-                            .font(.caption2.bold())
-                            .foregroundColor(.orange)
-                    }
                 }
                 .transition(.opacity)
             }
@@ -204,6 +209,7 @@ private struct HistoryRow: View {
         switch transaction.status {
         case .success: return Image(systemName: "checkmark.circle.fill")
         case .failed: return Image(systemName: "xmark.circle.fill")
+        case .rollbackFailed: return Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
         case .executing: return Image(systemName: "circle.dotted")
         case .rolledBack: return Image(systemName: "arrow.uturn.backward.circle.fill")
         }
@@ -213,6 +219,7 @@ private struct HistoryRow: View {
         switch transaction.status {
         case .success: return .green
         case .failed: return .red
+        case .rollbackFailed: return .orange
         case .executing: return .orange
         case .rolledBack: return .gray
         }

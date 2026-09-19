@@ -61,18 +61,19 @@ class Planner {
     }
     
     func plan(query: String, context: FinderContext) async throws -> ActionGraph {
-        // ⚡ Phase 1: Try Instant Action Parser (0ms local execution without LLM latency)
-        if let instantGraph = InstantActionParser.parse(query: query, context: context) {
+        let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
+        if activeRules.isEmpty, let instantGraph = InstantActionParser.parse(query: query, context: context) {
+            let sorted = try instantGraph.topologicallySorted()
+            try PlanValidator.validate(graph: sorted, query: query, context: context)
             lastPrompt = "[INSTANT LOCAL PARSER (0ms)]"
-            lastResponse = "⚡ Piano locale istantaneo generato (0ms)"
+            lastResponse = "Piano generato; strumenti e input controllati"
             print("[Atlas][Planner] ⚡ instant parser hit: tool=\(instantGraph.steps.first?.tool ?? "?") inputs=\(instantGraph.steps.first?.inputs.count ?? 0)")
-            return instantGraph
+            return sorted
         }
         print("[Atlas][Planner] ⚡ instant parser MISS → LLM path (visibleFiles=\(context.visibleFiles.count) selected=\(context.selectedFiles.count) dir=\(context.currentDirectory?.path ?? "nil"))")
         
         let rawComplexity = Self.analyzeComplexity(query: query)
         let isComplex = AppSettings.shared.disableThinking ? false : rawComplexity.isComplex
-        let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
         let initialPrompt = activeRules.isEmpty
             ? promptBuilder.buildCompactPrompt(query: query, context: context)
             : promptBuilder.buildPrompt(query: query, context: context)
@@ -88,7 +89,7 @@ class Planner {
         case .opencode:
             OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel, toolIds: toolIds)
         case .ollama:
-            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel, toolIds: toolIds)
+            OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel, toolIds: toolIds, disableThinking: settings.disableThinking)
         case .openai:
             OpenAIModelProvider(apiKey: settings.openAIApiKey, toolIds: toolIds)
         case .claude:
@@ -99,36 +100,49 @@ class Planner {
             OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds)
         }
         
-        // Attempt 1: Standard generation
         do {
+            // Transport, authentication and decode errors do not enter correction.
             let graph = try await provider.plan(prompt: initialPrompt, isComplex: isComplex)
-            let sorted = try graph.topologicallySorted()
-            
-            // Validation Pass 1
+            try Task.checkCancellation()
             do {
+                let sorted = try graph.topologicallySorted()
                 try PlanValidator.validate(graph: sorted, query: query, context: context)
-                lastResponse = "✓ Piano generato e verificato (\(sorted.steps.count) step)"
+                lastResponse = "Piano generato; strumenti e input controllati"
                 return sorted
-            } catch let validationError {
-                // Attempt 2: Self-correction retry prompt
+            } catch {
+                try Task.checkCancellation()
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    throw error
+                }
+                let rejectedJSON = String(decoding: try JSONEncoder().encode(graph), as: UTF8.self)
                 let retryPrompt = """
                 \(initialPrompt)
-                
+
                 ATTENTION - PREVIOUS PLAN VALIDATION FAILED:
-                \(validationError.localizedDescription)
-                Please fix your JSON plan so it strictly adheres to the user request and uses valid tools/formats.
+                \(error.localizedDescription)
+                REJECTED PLAN JSON:
+                \(rejectedJSON)
+                Correct the rejected plan, including dependency order, tools, formats and inputs. Return only the corrected plan.
                 """
                 lastPrompt = retryPrompt
-                
                 let secondGraph = try await provider.plan(prompt: retryPrompt, isComplex: isComplex)
+                try Task.checkCancellation()
                 let secondSorted = try secondGraph.topologicallySorted()
                 try PlanValidator.validate(graph: secondSorted, query: query, context: context)
-                
-                lastResponse = "✓ Piano rigenerato e verificato dopo correzione automatica (\(secondSorted.steps.count) step)"
+                lastResponse = "Piano generato; strumenti e input controllati"
                 return secondSorted
             }
         } catch {
-            lastResponse = "❌ ERRORE: \(error.localizedDescription)"
+            if case PlannerError.llmError(let detail) = error {
+                let lower = detail.lowercased()
+                let contextLimitMarkers = ["context_length_exceeded", "context window", "maximum context length", "prompt too long", "input too long", "http 413"]
+                if contextLimitMarkers.contains(where: lower.contains) {
+                    let contextError = PlannerError.llmError("\(detail)\nIl provider ha rifiutato il contesto troppo lungo. Riduci la selezione o scegli un provider con un contesto maggiore.")
+                    lastResponse = "ERRORE: \(contextError.localizedDescription)"
+                    throw contextError
+                }
+            }
+            lastResponse = "ERRORE: \(error.localizedDescription)"
             throw error
         }
     }

@@ -63,6 +63,7 @@ class ExecutorFramework {
                 transaction.completedAt = Date()
                 transaction.resultMessage = "Tool non trovato: \(step.tool)"
                 HistoryStore.shared.record(transaction)
+                AtlasUndoManager.shared.register(transaction: transaction)
                 throw ExecutorError.toolNotFound(step.tool)
             }
             
@@ -85,6 +86,7 @@ class ExecutorFramework {
                 transaction.completedAt = Date()
                 transaction.resultMessage = error.localizedDescription
                 HistoryStore.shared.record(transaction)
+                AtlasUndoManager.shared.register(transaction: transaction)
                 throw error
             }
             
@@ -111,31 +113,36 @@ class ExecutorFramework {
                     ))
                 }
             } catch {
+                let underlying: Error
+                if let partial = error as? ActionExecutionError {
+                    transaction.incorporate(partial.partialResult)
+                    underlying = partial.underlying
+                } else {
+                    underlying = error
+                }
                 print("[Atlas][Executor] ✗ Step \(index + 1)/\(graph.steps.count) fallito: \(error)")
+                progressBridge.finish()
                 transaction.status = .failed
                 transaction.completedAt = Date()
-                transaction.resultMessage = error.localizedDescription
+                transaction.resultMessage = underlying.localizedDescription
                 HistoryStore.shared.record(transaction)
-                throw error
+                AtlasUndoManager.shared.register(transaction: transaction)
+                throw underlying
             }
             print("[Atlas][Executor] ✓ Step \(index + 1)/\(graph.steps.count) completato: \(result.outputFiles.count) file")
+            transaction.incorporate(result)
             
             if !result.success {
                 transaction.status = .failed
                 transaction.completedAt = Date()
                 transaction.resultMessage = result.message ?? "Errore sconosciuto durante \(step.tool)"
                 HistoryStore.shared.record(transaction)
+                AtlasUndoManager.shared.register(transaction: transaction)
                 throw ExecutorError.executionFailed(result.message ?? "Unknown error during execution of \(step.tool)")
             }
             
-            for file in result.outputFiles {
-                transaction.addCreated(url: file)
-            }
-            for (original, backup) in result.backupURLs {
-                transaction.addBackup(original: original, backup: backup)
-            }
-            transaction.resultMessage = result.message ?? transaction.resultMessage
         }
+        progressBridge.finish()
         
         transaction.status = .success
         transaction.completedAt = Date()
@@ -148,19 +155,55 @@ class ExecutorFramework {
         return transaction
     }
 }
-
-/// Ponte tra il callback di progress (non-Sendable, legato al main actor)
-/// e la chiusura @Sendable ItemProgressCallback invocata dai plugin.
+/// Serializes progress updates from plugin threads and delivers them to the
+/// main actor at most every 50 ms; finish() flushes the last update before
+/// execute() returns so the UI never shows a stale step.
 private final class ProgressBridge: @unchecked Sendable {
     private let handler: (ProgressUpdate) -> Void
-    
+    private let queue = DispatchQueue(label: "atlas.progressbridge", qos: .userInitiated)
+    private var latest: ProgressUpdate?
+    private var pending = false
+    private var lastSent = Date.distantPast
+    private var finished = false
+
     init(handler: @escaping (ProgressUpdate) -> Void) {
         self.handler = handler
     }
-    
+
     func send(_ update: ProgressUpdate) {
+        queue.async {
+            guard !self.finished else { return }
+            self.latest = update
+            guard !self.pending else { return }
+            let elapsed = Date().timeIntervalSince(self.lastSent)
+            if elapsed >= 0.05 {
+                self.deliverNow()
+            } else {
+                self.pending = true
+                self.queue.asyncAfter(deadline: .now() + (0.05 - elapsed)) { [weak self] in
+                    guard let self, !self.finished else { return }
+                    self.pending = false
+                    self.deliverNow()
+                }
+            }
+        }
+    }
+
+    func finish() {
+        queue.async {
+            self.finished = true
+            self.pending = false
+            self.deliverNow()
+        }
+    }
+
+    private func deliverNow() {
+        guard let update = latest else { return }
+        latest = nil
+        lastSent = Date()
         Task { @MainActor in
-            handler(update)
+            self.handler(update)
         }
     }
 }
+

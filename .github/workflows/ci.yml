@@ -26,4 +26,13 @@ jobs:
         run: swift build -v
 
       - name: Test
+      - name: Build app bundle
+        run: make build
+          test -f .build/Atlas.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle/Contents/Info.plist
+      - name: Verify app bundle
+        run: |
+          test -x .build/Atlas.app/Contents/MacOS/Atlas
+          test -f .build/Atlas.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle/Contents/Info.plist
+          plutil -extract LSMinimumSystemVersion raw .build/Atlas.app/Contents/Info.plist | grep -qx 26.0
+          codesign --verify --deep --strict .build/Atlas.app
         run: swift test

@@ -49,43 +49,76 @@ extension ModelProvider {
 
 enum ActionGraphParser {
     static func parse(_ text: String) throws -> ActionGraph {
-        var jsonString = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // 1. Remove <think>...</think> or <reasoning>...</reasoning> tags (DeepSeek / Reasoning / LM Studio models)
-        if let thinkRegex = try? NSRegularExpression(pattern: "<(?:think|reasoning)>[\\s\\S]*?</(?:think|reasoning)>", options: [.caseInsensitive]) {
-            jsonString = thinkRegex.stringByReplacingMatches(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString), withTemplate: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoder = JSONDecoder()
+        if let graph = try? decoder.decode(ActionGraph.self, from: Data(raw.utf8)) { return graph }
+
+        var unwrapped = raw
+        while true {
+            let previous = unwrapped
+            for tag in ["think", "reasoning"] {
+                if unwrapped.lowercased().hasPrefix("<\(tag)>"),
+                   let end = unwrapped.range(of: "</\(tag)>", options: .caseInsensitive) {
+                    unwrapped = String(unwrapped[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            if unwrapped.hasPrefix("```"), unwrapped.hasSuffix("```"),
+               let newline = unwrapped.firstIndex(of: "\n") {
+                let header = unwrapped[..<newline].lowercased()
+                if header == "```" || header == "```json" {
+                    unwrapped = String(unwrapped[unwrapped.index(after: newline)..<unwrapped.index(unwrapped.endIndex, offsetBy: -3)])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+            if unwrapped == previous { break }
         }
-        
-        // Also remove unclosed <think> or <reasoning> prefixes if model output was truncated
-        if let unclosedThinkRegex = try? NSRegularExpression(pattern: "^<(?:think|reasoning)>[\\s\\S]*?\\n(?=\\{)", options: [.caseInsensitive]) {
-            jsonString = unclosedThinkRegex.stringByReplacingMatches(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString), withTemplate: "").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        
-        // 2. Strip markdown code fences if present
-        if let regex = try? NSRegularExpression(pattern: "```(?:json)?([\\s\\S]*?)```", options: []) {
-            if let match = regex.firstMatch(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString)) {
-                if let range = Range(match.range(at: 1), in: jsonString) {
-                    jsonString = String(jsonString[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let graph = try? decoder.decode(ActionGraph.self, from: Data(unwrapped.utf8)) { return graph }
+
+        // Only outermost balanced values are candidates: never salvage a nested
+        // valid step from a malformed plan or rewrite quoted JSON contents.
+        var start: String.Index?
+        var closing: [Character] = []
+        var inString = false
+        var escaped = false
+        var candidates: [ActionGraph] = []
+        for index in unwrapped.indices {
+            let character = unwrapped[index]
+            if start == nil {
+                if character == "{" || character == "[" {
+                    start = index
+                    closing = [character == "{" ? "}" : "]"]
+                }
+                continue
+            }
+            if inString {
+                if escaped { escaped = false }
+                else if character == "\\" { escaped = true }
+                else if character == "\"" { inString = false }
+                continue
+            }
+            if character == "\"" { inString = true }
+            else if character == "{" { closing.append("}") }
+            else if character == "[" { closing.append("]") }
+            else if character == "}" || character == "]" {
+                guard closing.last == character else {
+                    start = nil
+                    closing.removeAll()
+                    continue
+                }
+                closing.removeLast()
+                if closing.isEmpty, let first = start {
+                    if let graph = try? decoder.decode(ActionGraph.self, from: Data(unwrapped[first...index].utf8)) {
+                        candidates.append(graph)
+                    }
+                    start = nil
                 }
             }
         }
-        
-        // 3. Extract substring from first '{' to last '}'
-        if let firstBrace = jsonString.firstIndex(of: "{"),
-           let lastBrace = jsonString.lastIndex(of: "}"),
-           firstBrace <= lastBrace {
-            jsonString = String(jsonString[firstBrace...lastBrace])
+        if candidates.count == 1 { return candidates[0] }
+        if candidates.count > 1 {
+            throw PlannerError.decodingFailed("Risposta ambigua: contiene più piani JSON validi.")
         }
-        
-        guard let data = jsonString.data(using: .utf8) else {
-            throw PlannerError.decodingFailed("Impossibile convertire la risposta in Data")
-        }
-        
-        do {
-            return try JSONDecoder().decode(ActionGraph.self, from: data)
-        } catch {
-            throw PlannerError.decodingFailed("Formato JSON non valido o campi non conformi: \(error.localizedDescription)\n\nTesto grezzo dal modello:\n\(text)")
-        }
+        throw PlannerError.decodingFailed("Formato JSON non valido o campi non conformi.\n\nTesto grezzo dal modello:\n\(text)")
     }
 }
 
@@ -187,37 +220,38 @@ struct AppleModelProvider: ModelProvider {
 struct OllamaModelProvider: ModelProvider {
     var endpoint: String
     var model: String
+    var disableThinking: Bool
+    var session: URLSession
     /// ID dei tool registrati; vuoto = `format:"json"` (payload legacy).
     var toolIds: [String] = []
 
-    init(endpoint: String, model: String, toolIds: [String] = []) {
+    init(endpoint: String, model: String, toolIds: [String] = [], disableThinking: Bool = false, session: URLSession = .shared) {
         self.endpoint = endpoint
         self.model = model
         self.toolIds = toolIds
+        self.disableThinking = disableThinking
+        self.session = session
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
     /// identico al flusso storico (`format:"json"`); con lo schema diventa un
     /// oggetto (structured outputs nativi, Ollama ≥0.5).
     static func makeBody(prompt: String, isComplex: Bool, model: String,
-                         toolParameters: [String: Any]?) -> [String: Any] {
-        var options: [String: Any] = [
-            "temperature": 0.0,
-            "num_predict": isComplex ? 3500 : 1200
-        ]
-        if !isComplex {
-            options["thinking"] = false
-        }
-
-        let format: Any = toolParameters ?? "json"
-
-        return [
+                         toolParameters: [String: Any]?, disableThinking: Bool = false) -> [String: Any] {
+        var body: [String: Any] = [
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "format": format,
-            "options": options
+            "format": toolParameters ?? "json",
+            "options": [
+                "temperature": 0.0,
+                "num_predict": isComplex ? 3500 : 1200
+            ]
         ]
+        if disableThinking {
+            body["think"] = false
+        }
+        return body
     }
 
     func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
@@ -244,14 +278,15 @@ struct OllamaModelProvider: ModelProvider {
     }
 
     /// Esegue /api/generate e ritorna il testo di risposta. Se il server
-    /// rifiuta lo schema strutturato (HTTP 4xx, Ollama <0.5) riprova una
+    /// rifiuta esplicitamente lo schema strutturato (HTTP 400) riprova una
     /// volta sola con `format:"json"`.
     private func generateText(prompt: String, isComplex: Bool, toolParameters: [String: Any]?) async throws -> String {
         let requestBody = Self.makeBody(
             prompt: prompt,
             isComplex: isComplex,
             model: model,
-            toolParameters: toolParameters
+            toolParameters: toolParameters,
+            disableThinking: disableThinking
         )
 
         guard let url = URL(string: endpoint) else {
@@ -264,17 +299,20 @@ struct OllamaModelProvider: ModelProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
-        if toolParameters != nil,
-           let httpResponse = response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            // Endpoint senza structured outputs: degrade a format json.
-            return try await generateText(prompt: prompt, isComplex: isComplex, toolParameters: nil)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PlannerError.llmError("Nessuna risposta da Ollama su \(endpoint).")
         }
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw PlannerError.llmError("Impossibile raggiungere Ollama su \(endpoint). Assicurati che sia in esecuzione.")
+        guard httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            // Only an explicit unsupported schema rejection warrants legacy format.
+            let lower = body.lowercased()
+            if toolParameters != nil, httpResponse.statusCode == 400,
+               lower.contains("format"), (lower.contains("schema") || lower.contains("unmarshal")) {
+                return try await generateText(prompt: prompt, isComplex: isComplex, toolParameters: nil)
+            }
+            throw PlannerError.llmError("Errore Ollama (HTTP \(httpResponse.statusCode)): \(body)")
         }
 
         guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -291,12 +329,14 @@ struct OllamaModelProvider: ModelProvider {
 struct OpenAIModelProvider: ModelProvider {
     var apiKey: String
     var model: String = "gpt-4o-mini"
+    var session: URLSession
     /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
     var toolIds: [String] = []
 
-    init(apiKey: String, toolIds: [String] = []) {
+    init(apiKey: String, toolIds: [String] = [], session: URLSession = .shared) {
         self.apiKey = apiKey
         self.toolIds = toolIds
+        self.session = session
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
@@ -318,8 +358,7 @@ struct OpenAIModelProvider: ModelProvider {
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": isComplex ? 3500 : 1200,
-            "reasoning_effort": isComplex ? "medium" : "low"
+            "max_tokens": isComplex ? 3500 : 1200
         ]
         if let params = toolParameters {
             // Tool calling attivo: response_format json_object è ridondante e
@@ -362,7 +401,7 @@ struct OpenAIModelProvider: ModelProvider {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PlannerError.llmError("Nessuna risposta da OpenAI")
@@ -472,10 +511,11 @@ struct ClaudeModelProvider: ModelProvider {
 struct NvidiaModelProvider: ModelProvider {
     var apiKey: String
     var model: String
+    var session: URLSession
     /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
     var toolIds: [String] = []
 
-    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct", toolIds: [String] = []) {
+    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct", toolIds: [String] = [], session: URLSession = .shared) {
         self.apiKey = apiKey
         if model.isEmpty || model.contains("deepseek-v4-flash") {
             self.model = "meta/llama-3.3-70b-instruct"
@@ -483,6 +523,7 @@ struct NvidiaModelProvider: ModelProvider {
             self.model = model
         }
         self.toolIds = toolIds
+        self.session = session
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
@@ -548,51 +589,54 @@ struct NvidiaModelProvider: ModelProvider {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
-        var lastError: Error?
-        var attempts = 0
         let maxAttempts = 3
-        
-        while attempts < maxAttempts {
-            attempts += 1
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            attempt += 1
+            let data: Data
+            let response: URLResponse
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    throw PlannerError.llmError("Nessuna risposta da NVIDIA Build")
-                }
-                
-                if httpResponse.statusCode == 503 || httpResponse.statusCode == 429 {
-                    if attempts < maxAttempts {
-                        try await Task.sleep(nanoseconds: 1_200_000_000) // Wait 1.2s before retry
-                        continue
-                    } else {
-                        throw PlannerError.llmError("I server NVIDIA per '\(model)' sono momentaneamente saturi (HTTP 503). Riprova tra poco o seleziona un altro modello (es. meta/llama-3.1-405b-instruct o deepseek-ai/deepseek-r1).")
-                    }
-                }
-                
-                guard httpResponse.statusCode == 200 else {
-                    let body = String(data: data, encoding: .utf8) ?? ""
-                    throw PlannerError.llmError("Errore NVIDIA Build (HTTP \(httpResponse.statusCode)): \(body)")
-                }
-                
-                guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let choices = jsonObject["choices"] as? [[String: Any]],
-                      let first = choices.first,
-                      let message = first["message"] as? [String: Any] else {
-                    throw PlannerError.invalidResponse
-                }
-
-                return try PlanResponseParser.parseOpenAIMessage(message)
+                (data, response) = try await session.data(for: request)
             } catch {
-                lastError = error
-                if attempts < maxAttempts && !(error is PlannerError) {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    continue
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    throw error
                 }
+                guard let networkError = error as? URLError, attempt < maxAttempts else {
+                    throw error
+                }
+                switch networkError.code {
+                case .timedOut, .networkConnectionLost, .cannotConnectToHost,
+                     .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
+                     .resourceUnavailable:
+                    break
+                default:
+                    throw error
+                }
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+                continue
             }
+            try Task.checkCancellation()
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw PlannerError.llmError("Nessuna risposta da NVIDIA Build")
+            }
+            let status = httpResponse.statusCode
+            if (status == 429 || (500...599).contains(status)), attempt < maxAttempts {
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+                continue
+            }
+            guard status == 200 else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                throw PlannerError.llmError("Errore NVIDIA Build (HTTP \(status)): \(body)")
+            }
+            guard let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = jsonObject["choices"] as? [[String: Any]],
+                  let first = choices.first,
+                  let message = first["message"] as? [String: Any] else {
+                throw PlannerError.invalidResponse
+            }
+            return try PlanResponseParser.parseOpenAIMessage(message)
         }
-        
-        throw lastError ?? PlannerError.llmError("Errore imprevisto NVIDIA Build.")
     }
 }
 

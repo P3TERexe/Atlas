@@ -71,6 +71,44 @@ final class ExecutorFrameworkTests: XCTestCase {
         HistoryStore.shared.transactions.first
     }
 
+    func testHistoryAndUndoShareRetryableResidualJournal() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let output = dir.appendingPathComponent("output.txt")
+        let original = dir.appendingPathComponent("original.txt")
+        let backup = dir.appendingPathComponent("backup.txt")
+        try Data("new".utf8).write(to: output)
+        try Data("current".utf8).write(to: original)
+        var transaction = AtlasTransaction(steps: [])
+        transaction.status = .success
+        transaction.addCreated(url: output)
+        transaction.addBackup(original: original, backup: backup)
+        let history = HistoryStore.shared
+        history.record(transaction)
+        history.record(transaction)
+        XCTAssertEqual(history.transactions.filter { $0.id == transaction.id }.count, 1)
+        AtlasUndoManager.shared.register(transaction: transaction)
+        XCTAssertThrowsError(try history.rollback(id: transaction.id))
+        let failed = try XCTUnwrap(history.transactions.first { $0.id == transaction.id })
+        XCTAssertEqual(failed.status, .rollbackFailed)
+        XCTAssertTrue(failed.createdURLs.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: original), Data("current".utf8))
+
+        let storeFile = try XCTUnwrap(Self.storeRoot).appendingPathComponent("Atlas/history.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode([AtlasTransaction].self, from: Data(contentsOf: storeFile))
+        XCTAssertEqual(persisted.first { $0.id == transaction.id }?.status, .rollbackFailed)
+        try Data("previous".utf8).write(to: backup)
+        AtlasUndoManager.shared.undo()
+        XCTAssertEqual(history.transactions.first { $0.id == transaction.id }?.status, .rolledBack)
+        XCTAssertEqual(try Data(contentsOf: original), Data("previous".utf8))
+        try Data("later".utf8).write(to: output)
+        AtlasUndoManager.shared.undo()
+        XCTAssertThrowsError(try history.rollback(id: transaction.id))
+        XCTAssertEqual(try Data(contentsOf: output), Data("later".utf8))
+    }
+
     // MARK: - Tool inesistente
 
     func testUnknownToolFailsAndRecords() async throws {

@@ -3,147 +3,162 @@ import XCTest
 
 @MainActor
 final class PlanValidatorTests: XCTestCase {
-
-    // MARK: - Fixtures
-
-    private func context(selected: [URL] = [], visible: [URL] = []) -> FinderContext {
-        FinderContext(
-            currentDirectory: URL(fileURLWithPath: "/tmp"),
-            selectedFiles: selected,
-            visibleFiles: visible,
-            installedTools: [],
-            timestamp: Date()
-        )
+    private func withContext(_ names: [String], body: (FinderContext) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let urls = try names.map { name in
+            let url = directory.appendingPathComponent(name)
+            try Data("fixture".utf8).write(to: url)
+            return url
+        }
+        try body(FinderContext(currentDirectory: directory, selectedFiles: [], visibleFiles: urls, installedTools: [], timestamp: Date()))
     }
 
-    private func expectCase(
-        _ expression: @autoclosure () throws -> Void,
-        _ pattern: (PlanValidationError) -> Bool,
-        _ message: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        do {
-            try expression()
-            XCTFail("La validazione doveva fallire: \(message)", file: file, line: line)
-        } catch let error as PlanValidationError {
-            XCTAssertTrue(pattern(error), "Errore inatteso \(error): \(message)", file: file, line: line)
-        } catch {
-            XCTFail("Errore di tipo inatteso \(error): \(message)", file: file, line: line)
+    func testSourceExtensionDoesNotOverrideRequestedConversion() throws {
+        try withContext(["foto.png"]) { context in
+            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "jpg")])
+            try PlanValidator.validate(graph: graph, query: "converti foto.png in jpg", context: context)
+            try PlanValidator.validate(graph: graph, query: "convert selected images to jpg", context: context)
         }
     }
 
-    // MARK: - Happy paths
-
-    func testValidConvertPlanPasses() throws {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/foto.png")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "webp"),
-        ])
-
-        XCTAssertNoThrow(try PlanValidator.validate(graph: graph, query: "converti in webp", context: ctx), "Un piano coerente con query e contesto deve passare")
+    func testEmptyPlanAndUnknownToolAreRejected() throws {
+        try withContext([]) { context in
+            XCTAssertThrowsError(try PlanValidator.validate(graph: ActionGraph(steps: []), query: "anything", context: context)) {
+                guard case PlanValidationError.emptyPlan = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "unknown.tool")])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "anything", context: context)) {
+                guard case PlanValidationError.toolNotFound("unknown.tool") = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
     }
 
-    func testPureSelectionPlanPasses() throws {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/foto.jpg")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "file.select", inputs: [], format: "jpg"),
-        ])
-
-        // La selezione pura è valida e salta i controlli di formato
-        XCTAssertNoThrow(try PlanValidator.validate(graph: graph, query: "seleziona le foto", context: ctx))
+    func testCanonicalSelectionRejectsModification() throws {
+        try withContext(["foto.png"]) { context in
+            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "jpg")])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "seleziona le foto", context: context)) {
+                guard case PlanValidationError.intentMismatch = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
     }
 
-    // MARK: - Rami d'errore
-
-    func testEmptyPlanIsRejected() {
-        expectCase(
-            try PlanValidator.validate(graph: ActionGraph(steps: []), query: "qualunque cosa", context: context()),
-            { if case .emptyPlan = $0 { return true }; return false },
-            "un piano senza step deve produrre emptyPlan"
-        )
+    func testCanonicalZipRejectsOtherFileTools() throws {
+        try withContext(["foto.png"]) { context in
+            let wrong = ActionGraph(steps: [ActionStep(id: "s1", tool: "file.select", inputs: ["foto.png"])])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: wrong, query: "zip", context: context))
+            let graph = try XCTUnwrap(InstantActionParser.parse(query: "comprimi le foto", context: context))
+            try PlanValidator.validate(graph: graph, query: "comprimi le foto", context: context)
+        }
     }
 
-    func testUnknownToolIsRejected() {
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "nope.quantumTransmute"),
-        ])
-
-        expectCase(
-            try PlanValidator.validate(graph: graph, query: "fai la magia", context: context()),
-            { if case .toolNotFound(let tool) = $0 { return tool == "nope.quantumTransmute" }; return false },
-            "un tool non registrato deve produrre toolNotFound"
-        )
+    func testCanonicalConversionChecksFormatAndGrayscale() throws {
+        try withContext(["foto.png"]) { context in
+            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "png")])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "jpg", context: context)) {
+                guard case PlanValidationError.formatMismatch = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "bianco e nero", context: context)) {
+                guard case PlanValidationError.grayscaleMissing = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
     }
 
-    func testSelectionQueryWithModificationStepIsRejected() {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/doc.pdf")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: ["doc.pdf"], format: "pdf"),
-        ])
-
-        expectCase(
-            try PlanValidator.validate(graph: graph, query: "seleziona i pdf", context: ctx),
-            { if case .intentMismatch = $0 { return true }; return false },
-            "'seleziona' senza verbi di modifica accetta solo file.select"
-        )
+    func testMissingAndWrongTypeExplicitInputsNeverFallBack() throws {
+        try withContext(["foto.png", "note.txt"]) { original in
+            let context = FinderContext(currentDirectory: original.currentDirectory, selectedFiles: [original.visibleFiles[0]], visibleFiles: original.visibleFiles, installedTools: [], timestamp: Date())
+            let missing = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["missing.png"], format: "jpg")])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: missing, query: "converti", context: context))
+            let wrongType = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["note.txt"], format: "jpg")])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: wrongType, query: "converti", context: context))
+        }
     }
 
-    func testPhotoCompressWithoutQualityRequiresZip() {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/foto.png")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "png"),
-        ])
-
-        expectCase(
-            try PlanValidator.validate(graph: graph, query: "comprimi le foto", context: ctx),
-            { if case .intentMismatch = $0 { return true }; return false },
-            "'comprimi foto' senza qualità/formato deve richiedere file.zip"
-        )
+    func testDeclaredDependencyOutputAcceptedButGuessedOutputRejected() throws {
+        try withContext(["foto.png"]) { context in
+            let convert = ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "jpg")
+            let consume = ActionStep(id: "s2", tool: "file.zip", inputs: ["foto.jpg"], format: "archive.zip", dependsOn: ["s1"])
+            try PlanValidator.validate(graph: ActionGraph(steps: [consume, convert]), query: "converti poi archivia", context: context)
+            var missingDependency = consume
+            missingDependency.dependsOn = nil
+            XCTAssertThrowsError(try PlanValidator.validate(graph: ActionGraph(steps: [convert, missingDependency]), query: "converti poi archivia", context: context))
+            var guessed = consume
+            guessed.inputs = ["unrelated.jpg"]
+            XCTAssertThrowsError(try PlanValidator.validate(graph: ActionGraph(steps: [convert, guessed]), query: "converti poi archivia", context: context))
+            let rename = ActionStep(id: "s1", tool: "file.rename", inputs: ["foto.png"], format: "jpg")
+            XCTAssertThrowsError(try PlanValidator.validate(graph: ActionGraph(steps: [rename, consume]), query: "rinomina poi archivia", context: context))
+        }
     }
 
-    func testFormatKeywordMissingFromStepsIsRejectedIncludingTypos() {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/foto.png")])
-        let wrongFormat = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "png"),
-        ])
-
-        expectCase(
-            try PlanValidator.validate(graph: wrongFormat, query: "converti in jepeg", context: ctx),
-            { if case .intentMismatch(let reason) = $0 { return reason.contains("jpg") }; return false },
-            "il typo 'jepeg' va normalizzato a 'jpg' e segnalato come formato mancante"
-        )
-
-        expectCase(
-            try PlanValidator.validate(graph: wrongFormat, query: "converti in heic", context: ctx),
-            { if case .intentMismatch = $0 { return true }; return false },
-            "formato richiesto assente dagli step → intentMismatch"
-        )
+    func testStructuralErrorsAreNotSkippedForSelection() throws {
+        try withContext(["foto.png"]) { context in
+            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "file.select", inputs: ["foto.png"], dependsOn: ["missing"])])
+            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "seleziona le foto", context: context))
+        }
     }
 
-    func testBlackAndWhiteWithoutGrayscaleFlagIsRejected() {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/foto.png")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "png"),
-        ])
+    func testCompletePromptCandidateArraysPreserveNamesAndCounts() throws {
+        let names = (1...21).map { "file-\($0).png" } + ["quote\" and\nnewline.png"]
+        try withContext(names) { original in
+            let context = FinderContext(currentDirectory: original.currentDirectory, selectedFiles: Array(original.visibleFiles.prefix(11)), visibleFiles: original.visibleFiles, installedTools: [], timestamp: Date())
+            let builder = PromptBuilder()
+            let selectedJSON = String(decoding: try JSONEncoder().encode(Array(names.prefix(11))), as: UTF8.self)
+            let visibleJSON = String(decoding: try JSONEncoder().encode(names), as: UTF8.self)
+            for prompt in [builder.buildPrompt(query: "converti", context: context), builder.buildCompactPrompt(query: "converti", context: context)] {
+                XCTAssertTrue(prompt.contains("Selected Files (count: 11):"))
+                XCTAssertTrue(prompt.contains("Visible Files (count: 22):"))
+                XCTAssertTrue(prompt.contains(selectedJSON))
+                XCTAssertTrue(prompt.contains(visibleJSON))
+            }
+        }
+    }
+}
 
-        expectCase(
-            try PlanValidator.validate(graph: graph, query: "rendi bianco e nero", context: ctx),
-            { if case .grayscaleMissing = $0 { return true }; return false },
-            "richiesta B&N senza grayscale: true deve produrre grayscaleMissing"
-        )
+final class ActionGraphDecodingTests: XCTestCase {
+    func testMalformedInputsAndDependenciesThrow() throws {
+        let invalidSteps = [
+            #"{"id":"s","tool":"file.zip"}"#,
+            #"{"id":"s","tool":"file.zip","inputs":null}"#,
+            #"{"id":"s","tool":"file.zip","inputs":42}"#,
+            #"{"id":"s","tool":"file.zip","inputs":["a",42]}"#,
+            #"{"id":"s","tool":"file.zip","inputs":[],"dependsOn":{}}"#,
+            #"{"id":"s","tool":"file.zip","inputs":[],"format":42}"#,
+            #"{"id":"s","tool":"file.zip","inputs":[],"grayscale":"true"}"#,
+            #"{"id":"s","tool":"file.zip","inputs":[],"quality":"50"}"#,
+        ]
+        for step in invalidSteps {
+            XCTAssertThrowsError(try JSONDecoder().decode(ActionStep.self, from: Data(step.utf8)))
+            XCTAssertThrowsError(try ActionGraphParser.parse("{\"steps\":[\(step)]}"))
+        }
     }
 
-    func testConvertWithoutMatchingImageFilesIsRejected() {
-        let ctx = context(visible: [URL(fileURLWithPath: "/tmp/note.txt")])
-        let graph = ActionGraph(steps: [
-            ActionStep(id: "s1", tool: "image.convert", inputs: [], format: "webp"),
-        ])
+    func testStringCoercionAndOptionalDependencies() throws {
+        let step = try JSONDecoder().decode(ActionStep.self, from: Data(#"{"id":"s","tool":"file.zip","inputs":"a.txt","dependsOn":"first"}"#.utf8))
+        XCTAssertEqual(step.inputs, ["a.txt"])
+        XCTAssertEqual(step.dependsOn, ["first"])
+        let noDependency = try JSONDecoder().decode(ActionStep.self, from: Data(#"{"id":"s","tool":"file.zip","inputs":[],"dependsOn":null}"#.utf8))
+        XCTAssertNil(noDependency.dependsOn)
+    }
 
-        expectCase(
-            try PlanValidator.validate(graph: graph, query: "converti in webp", context: ctx),
-            { if case .noMatchingFiles(let tool, _) = $0 { return tool == "image.convert" }; return false },
-            "image.convert senza immagini nel contesto deve produrre noMatchingFiles"
-        )
+    func testLiteralTagsEscapesAndBracesSurviveEveryWrapper() throws {
+        let input = "literal <think>do not strip</think> <reasoning>x</reasoning> ```json { } [ ] \\\".png"
+        let graph = ActionGraph(steps: [ActionStep(id: "s", tool: "file.select", inputs: [input])])
+        let json = String(decoding: try JSONEncoder().encode(graph), as: UTF8.self)
+        for text in [json, "```json\n\(json)\n```", "<think>internal reasoning</think>\n```json\n\(json)\n```", "Here is the plan:\n\(json)\nDone."] {
+            XCTAssertEqual(try ActionGraphParser.parse(text).steps[0].inputs, [input])
+        }
+    }
+
+    func testTopLevelArrayAndAmbiguousCandidates() throws {
+        let array = #"[{"id":"s","tool":"file.select","inputs":["a.png"]}]"#
+        XCTAssertEqual(try ActionGraphParser.parse(array).steps[0].inputs, ["a.png"])
+        XCTAssertEqual(try ActionGraphParser.parse("Plan: \(array) End.").steps[0].id, "s")
+        XCTAssertThrowsError(try ActionGraphParser.parse("First: \(array) Second: \(array)"))
+    }
+
+    func testMalformedOuterPlanCannotBeSalvagedFromNestedArray() {
+        let malformed = #"{"steps":[{"id":"s","tool":"file.zip","inputs":42}],"nested":{"steps":[{"id":"other","tool":"file.zip","inputs":[]}]}}"#
+        XCTAssertThrowsError(try ActionGraphParser.parse(malformed))
     }
 }

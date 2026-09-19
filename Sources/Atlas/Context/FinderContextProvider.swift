@@ -1,115 +1,114 @@
 import Foundation
 
-/// Gathers the current Finder context (frontmost window, selection, visible
-/// files, installed tools) entirely off the main thread:
-/// - Finder data via `/usr/bin/osascript` (Process-based, no main-thread
-///   AppleScript run-loop blocking).
-/// - Filesystem scans on detached utility tasks.
+/// Captures directory and selection together, then scans the captured directory off-main.
 struct FinderContextProvider {
-    
-    func getCurrentContext() async -> FinderContext {
-        async let directoryTask = finderCurrentDirectory()
-        async let selectedTask = finderSelectedFiles()
-        
-        let currentDirectory = await directoryTask
-        let selectedFiles = await selectedTask
-        let visibleFiles = await visibleFiles(in: currentDirectory)
-        let installedTools = await installedTools()
-        
-        return FinderContext(
-            currentDirectory: currentDirectory,
-            selectedFiles: selectedFiles,
-            visibleFiles: visibleFiles,
-            installedTools: installedTools,
-            timestamp: Date()
+    private struct Snapshot: Decodable {
+        let directory: String
+        let selected: [String]
+    }
+
+    struct ContextError: Error, LocalizedError {
+        let reason: String
+
+        var errorDescription: String? {
+            "Impossibile leggere il contesto Finder: \(reason)\nVerifica Impostazioni di Sistema → Privacy e sicurezza → Automazione → Atlas → Finder (System Settings > Privacy & Security > Automation > Atlas > Finder)."
+        }
+    }
+
+    private static let finderScript = """
+        ObjC.import('Foundation');
+        function run() {
+            const finder = Application('Finder');
+            function filePath(item) {
+                const url = $.NSURL.URLWithString(item.url());
+                if (!url || !url.isFileURL) {
+                    throw new Error('Finder did not return a file URL.');
+                }
+                return ObjC.unwrap(url.path);
+            }
+            const directory = finder.finderWindows.length > 0
+                ? filePath(finder.finderWindows[0].target())
+                : filePath(finder.desktop);
+            const selected = finder.selection().map(filePath);
+            return JSON.stringify({directory: directory, selected: selected});
+        }
+        """
+
+    func getCurrentContext() async throws -> FinderContext {
+        do {
+            try Task.checkCancellation()
+            guard let osascript = BinaryLocator.locate("osascript") else {
+                throw ContextError(reason: "osascript non disponibile.")
+            }
+            let result = try await AsyncProcessRunner.run(
+                executableURL: URL(fileURLWithPath: osascript),
+                arguments: ["-l", "JavaScript", "-e", Self.finderScript],
+                timeout: 10
+            )
+            try Task.checkCancellation()
+            guard result.isSuccess else {
+                throw ContextError(reason: "osascript terminato con codice \(result.exitCode): \(result.stderr)")
+            }
+            let snapshot = try Self.decodeSnapshot(result.stdout)
+            let scan = Task.detached(priority: .utility) {
+                try Task.checkCancellation()
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: snapshot.directory,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ).sorted { $0.path < $1.path }
+                let tools = [
+                    ("sips", "sips"),
+                    ("python3", "python3"),
+                    ("zip", "zip"),
+                    ("rsync", "rsync"),
+                    ("ffmpeg", "ffmpeg"),
+                    ("magick", "imagemagick"),
+                    ("gs", "gs")
+                ].compactMap { binary, name in
+                    BinaryLocator.locate(binary) == nil ? nil : name
+                }
+                try Task.checkCancellation()
+                return (files, tools)
+            }
+            let (visibleFiles, installedTools) = try await withTaskCancellationHandler {
+                try await scan.value
+            } onCancel: {
+                scan.cancel()
+            }
+            try Task.checkCancellation()
+            return FinderContext(
+                currentDirectory: snapshot.directory,
+                selectedFiles: snapshot.selected,
+                visibleFiles: visibleFiles,
+                installedTools: installedTools,
+                timestamp: Date()
+            )
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            if let error = error as? ContextError {
+                throw error
+            }
+            throw ContextError(reason: error.localizedDescription)
+        }
+    }
+
+    /// JSON framing preserves spaces, embedded newlines and Unicode in Finder paths.
+    static func decodeSnapshot(_ output: String) throws -> (directory: URL, selected: [URL]) {
+        let snapshot: Snapshot
+        do {
+            snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(output.utf8))
+        } catch {
+            throw ContextError(reason: "Risposta JSON di Finder non valida: \(error.localizedDescription)")
+        }
+        guard snapshot.directory.hasPrefix("/"), snapshot.selected.allSatisfy({ $0.hasPrefix("/") }) else {
+            throw ContextError(reason: "Finder ha restituito un percorso non assoluto.")
+        }
+        return (
+            URL(fileURLWithPath: snapshot.directory, isDirectory: true),
+            snapshot.selected.map { URL(fileURLWithPath: $0) }
         )
-    }
-    
-    // MARK: - Finder AppleScript (via osascript)
-    
-    private func runAppleScript(_ source: String) async -> String? {
-        guard let result = try? await AsyncProcessRunner.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-            arguments: ["-e", source],
-            timeout: 10
-        ), result.isSuccess, !result.stdout.isEmpty else {
-            return nil
-        }
-        return result.stdout
-    }
-    
-    private func finderCurrentDirectory() async -> URL? {
-        // Fallback: Desktop if no window is found
-        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-        
-        let output = await runAppleScript("""
-            tell application "Finder"
-                if (count of Finder windows) > 0 then
-                    return POSIX path of (target of front window as alias)
-                else
-                    return POSIX path of (desktop as alias)
-                end if
-            end tell
-            """)
-        
-        if let path = output, !path.isEmpty {
-            return URL(fileURLWithPath: path)
-        }
-        return desktop
-    }
-    
-    private func finderSelectedFiles() async -> [URL] {
-        // Newline-separated output: one POSIX path per line (handles commas in names)
-        let output = await runAppleScript("""
-            tell application "Finder"
-                set theSelection to selection
-                set posixPaths to ""
-                repeat with anItem in theSelection
-                    try
-                        set posixPaths to posixPaths & (POSIX path of (anItem as alias)) & linefeed
-                    end try
-                end repeat
-                return posixPaths
-            end tell
-            """)
-        
-        guard let output, !output.isEmpty else { return [] }
-        
-        return output
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { URL(fileURLWithPath: $0) }
-    }
-    
-    // MARK: - Filesystem
-    
-    private func visibleFiles(in directory: URL?) async -> [URL] {
-        guard let directory else { return [] }
-        
-        return await Task.detached(priority: .utility) {
-            (try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []
-        }.value
-    }
-    
-    private func installedTools() async -> [String] {
-        await Task.detached(priority: .utility) {
-            var tools = ["sips", "python3", "zip", "rsync"] // Defaults on macOS
-            
-            // Check for homebrew tools
-            let fm = FileManager.default
-            if fm.fileExists(atPath: "/opt/homebrew/bin/ffmpeg") || fm.fileExists(atPath: "/usr/local/bin/ffmpeg") {
-                tools.append("ffmpeg")
-            }
-            if fm.fileExists(atPath: "/opt/homebrew/bin/magick") || fm.fileExists(atPath: "/usr/local/bin/magick") {
-                tools.append("imagemagick")
-            }
-            
-            return tools
-        }.value
     }
 }

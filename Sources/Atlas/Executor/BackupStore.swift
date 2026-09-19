@@ -37,7 +37,7 @@ enum BackupStore {
     /// Deletes backup directories older than `maxAgeDays`. Directories whose
     /// modification date cannot be read are skipped (conservative: never delete
     /// what we cannot age-classify).
-    static func prune(maxAgeDays: Int = 30) {
+    static func prune(maxAgeDays: Int = 30, preserving backupURLs: Set<URL>) {
         let fm = FileManager.default
         let root = rootOverride ?? defaultRoot()
         guard let children = try? fm.contentsOfDirectory(
@@ -48,6 +48,8 @@ enum BackupStore {
 
         let cutoff = Date().addingTimeInterval(-Double(maxAgeDays) * 86_400)
         for child in children {
+            let directoryPath = child.standardizedFileURL.path + "/"
+            guard !backupURLs.contains(where: { $0.standardizedFileURL.path.hasPrefix(directoryPath) }) else { continue }
             guard let modified = try? child.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { continue }
             if modified < cutoff {
                 try? fm.removeItem(at: child)

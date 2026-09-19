@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 
 enum FileActionType: String, Codable {
     case create
@@ -65,30 +66,29 @@ struct RiskAssessment {
         var items: [PredictedFileItem] = []
         var maxRisk: RiskLevel = .none
         
+        var declaredOutputs = Set<String>()
         for step in graph.steps {
             switch step.tool {
             case "file.rename":
                 maxRisk = .high
-                // Use the same resolver as the executor so the preview matches
-                // what will actually be touched (selection, directories, etc.).
-                for fileURL in FileResolver.resolveInputURLs(step: step, context: context) {
+                // Same resolver as the executor so preview matches execution.
+                let resolved = (try? InputResolver.resolve(step: step, context: context)) ?? []
+                for fileURL in resolved {
                     items.append(PredictedFileItem(url: fileURL, action: .modify, reason: "Rinominato secondo template '\(step.format ?? "")'"))
                 }
-                
             case "file.trash":
                 maxRisk = .high
-                for fileURL in FileResolver.resolveInputURLs(step: step, context: context, allowDirectories: true) {
+                let resolved = (try? InputResolver.resolve(step: step, context: context, allowDirectories: true)) ?? []
+                for fileURL in resolved {
                     items.append(PredictedFileItem(url: fileURL, action: .delete, reason: "Spostamento nel Cestino di macOS"))
                 }
-                
             case "image.convert":
-                for input in step.inputs {
-                    let originalURL = dir.appendingPathComponent(input)
+                let resolved = (try? InputResolver.resolve(step: step, context: context, extensions: MediaFormats.image)) ?? []
+                for originalURL in resolved {
                     let ext = step.format ?? originalURL.pathExtension
                     let suffix = (step.grayscale == true) ? "_bw" : ""
                     let newName = originalURL.deletingPathExtension().lastPathComponent + suffix + "." + ext
                     let targetURL = dir.appendingPathComponent(newName)
-                    
                     if targetURL.path == originalURL.path {
                         maxRisk = max(maxRisk, .medium)
                         items.append(PredictedFileItem(url: targetURL, action: .modify, reason: "Sovrascrizione file originale"))
@@ -97,69 +97,74 @@ struct RiskAssessment {
                         items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Generata nuova immagine"))
                     }
                 }
-                
             case "file.zip", "file.compress":
                 maxRisk = max(maxRisk, .low)
                 let archiveName = step.format ?? "archive.zip"
                 let targetURL = dir.appendingPathComponent(archiveName)
                 items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Creato nuovo archivio ZIP"))
-                
             case "pdf.merge", "pdf.fromImages":
                 maxRisk = max(maxRisk, .low)
                 let targetURL = dir.appendingPathComponent("merged.pdf")
                 items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Unione di file in PDF"))
-                
             case "pdf.split":
                 maxRisk = max(maxRisk, .medium)
-                for input in step.inputs {
-                    let base = (input as NSString).deletingPathExtension
-                    let page1URL = dir.appendingPathComponent("\(base)_page_1.pdf")
-                    items.append(PredictedFileItem(url: page1URL, action: .create, reason: "Estratte pagine singole da \(input)"))
+                let resolved = (try? InputResolver.resolve(step: step, context: context, extensions: ["pdf"])) ?? []
+                for input in resolved {
+                    let base = input.deletingPathExtension().lastPathComponent
+                    let pageCount = Self.pdfPageCount(of: input)
+                    if let pageCount {
+                        for page in 1...pageCount {
+                            items.append(PredictedFileItem(
+                                url: dir.appendingPathComponent("\(base)_page_\(page).pdf"),
+                                action: .create,
+                                reason: "Estratta pagina \(page) da \(input.lastPathComponent)"
+                            ))
+                        }
+                    } else {
+                        items.append(PredictedFileItem(
+                            url: dir.appendingPathComponent("\(base)_page_*.pdf"),
+                            action: .create,
+                            reason: "Pagine estratte da \(input.lastPathComponent); numero determinato all'esecuzione"
+                        ))
+                    }
                 }
-                
             case "pdf.compress":
                 maxRisk = max(maxRisk, .low)
-                for input in step.inputs {
-                    let base = (input as NSString).deletingPathExtension
+                let resolved = (try? InputResolver.resolve(step: step, context: context, extensions: ["pdf"])) ?? []
+                for input in resolved {
+                    let base = input.deletingPathExtension().lastPathComponent
                     let targetURL = dir.appendingPathComponent("\(base)-compressed.pdf")
                     items.append(PredictedFileItem(url: targetURL, action: .create, reason: "PDF ottimizzato"))
                 }
-                
             case "video.extractAudio":
                 maxRisk = max(maxRisk, .low)
-                for input in step.inputs {
-                    let base = (input as NSString).deletingPathExtension
+                let resolved = (try? InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)) ?? []
+                for input in resolved {
+                    let base = input.deletingPathExtension().lastPathComponent
                     let ext = step.format ?? "m4a"
                     let targetURL = dir.appendingPathComponent("\(base).\(ext)")
                     items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Audio estratto da video"))
                 }
-                
             case "video.convert":
                 maxRisk = max(maxRisk, .low)
-                for input in step.inputs {
-                    let base = (input as NSString).deletingPathExtension
+                let resolved = (try? InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)) ?? []
+                for input in resolved {
+                    let base = input.deletingPathExtension().lastPathComponent
                     let ext = step.format ?? "mp4"
                     let targetURL = dir.appendingPathComponent("\(base).\(ext)")
                     items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Video convertito"))
                 }
-                
             case "file.copy":
                 maxRisk = max(maxRisk, .low)
-                for input in step.inputs {
-                    let targetURL = dir.appendingPathComponent("copie").appendingPathComponent(input)
+                let resolved = (try? InputResolver.resolve(step: step, context: context)) ?? []
+                for input in resolved {
+                    let targetURL = dir.appendingPathComponent("copie").appendingPathComponent(input.lastPathComponent)
                     items.append(PredictedFileItem(url: targetURL, action: .create, reason: "Creazione di copie multiple in cartella 'copie'"))
                 }
-                
             case "file.select", "shell.calc":
-                // Pure selection / computation — no filesystem modification or risk!
                 break
-                
             case "shell.run":
                 let cmd = step.format ?? step.inputs.joined(separator: " ")
-                // Downgrade conservativo: .medium solo se tutti i leader del
-                // comando sono non-distruttivi e non ci sono redirezioni;
-                // altrimenti resta .high. La reason continua a includere il
-                // comando integrale per trasparenza UI.
                 maxRisk = ShellGuard.classify(cmd) ? .medium : .high
                 items.append(PredictedFileItem(
                     url: dir.appendingPathComponent("(comando shell)"),
@@ -173,6 +178,16 @@ struct RiskAssessment {
                     action: .modify,
                     reason: "Strumento non riconosciuto: \(step.tool)"
                 ))
+            }
+            for input in step.inputs where declaredOutputs.contains(input) {
+                items.append(PredictedFileItem(
+                    url: dir.appendingPathComponent(input),
+                    action: .create,
+                    reason: "Output dello step precedente, verificato all'esecuzione"
+                ))
+            }
+            if let outputName = Self.declaredOutputName(for: step) {
+                declaredOutputs.insert(outputName)
             }
         }
         
@@ -189,5 +204,18 @@ struct RiskAssessment {
         }
         
         return RiskAssessment(riskLevel: maxRisk, predictedItems: items, summaryMessage: summary)
+    }
+
+    /// Output file name a step declares for conversion-style tools, or nil.
+    private static func declaredOutputName(for step: ActionStep) -> String? {
+        guard let format = step.format, !format.isEmpty else { return nil }
+        return step.inputs.map { $0 as NSString }.map { $0.deletingPathExtension + "." + format }.first
+    }
+
+    /// Number of pages in a local PDF, used to enumerate split outputs in the preview.
+    private static func pdfPageCount(of url: URL) -> Int? {
+        guard let document = PDFDocument(url: url) else { return nil }
+        let count = document.pageCount
+        return count > 0 ? count : nil
     }
 }

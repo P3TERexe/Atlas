@@ -5,6 +5,8 @@ final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
     
     @Published private(set) var transactions: [AtlasTransaction] = []
+    @Published private(set) var persistenceError: String?
+    private(set) var loadSucceeded = true
     
     private let fileURL: URL
     
@@ -38,37 +40,47 @@ final class HistoryStore: ObservableObject {
             bounded.inputs = Array(step.inputs.prefix(Self.maxPersistedInputsPerStep))
             return bounded
         }
-        transactions.insert(tx, at: 0)
+        if let index = transactions.firstIndex(where: { $0.id == tx.id }) {
+            transactions[index] = tx
+        } else {
+            transactions.insert(tx, at: 0)
+        }
         if transactions.count > 100 {
+            for evicted in transactions.suffix(transactions.count - 100) {
+                AtlasUndoManager.shared.discard(id: evicted.id)
+            }
             transactions.removeLast(transactions.count - 100)
         }
         save()
     }
     
     func clear() {
+        for transaction in transactions { AtlasUndoManager.shared.discard(id: transaction.id) }
         transactions.removeAll()
         save()
     }
     
     @discardableResult
-    func rollback(id: UUID) -> RollbackResult? {
-        guard let index = transactions.firstIndex(where: { $0.id == id }) else { return nil }
+    func rollback(id: UUID) throws -> RollbackResult {
+        guard let index = transactions.firstIndex(where: { $0.id == id }) else {
+            throw RollbackError(failures: ["Transazione non trovata: \(id)"])
+        }
         var tx = transactions[index]
-        guard tx.status == .success else { return nil }
-        
+        guard tx.canRollback else {
+            throw RollbackError(failures: ["Transazione non annullabile: \(id)"])
+        }
         do {
             let result = try tx.rollback()
-            tx.status = .rolledBack
             tx.resultMessage = "Annullata: \(result.deletedFilesCount) file eliminati, \(result.restoredFilesCount) ripristinati."
             transactions[index] = tx
             save()
-            // Keep the global ⌘⇧Z stack in sync: this transaction must not be
-            // rolled back a second time from there.
             AtlasUndoManager.shared.discard(id: id)
             return result
         } catch {
-            print("Rollback failed for transaction \(id): \(error)")
-            return nil
+            tx.resultMessage = error.localizedDescription
+            transactions[index] = tx
+            save()
+            throw error
         }
     }
     
@@ -82,6 +94,8 @@ final class HistoryStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             transactions = try decoder.decode([AtlasTransaction].self, from: data)
         } catch {
+            loadSucceeded = false
+            persistenceError = "Impossibile caricare la cronologia: \(error.localizedDescription)"
             // Quarantine the unreadable store instead of silently losing it.
             let backupURL = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
             try? FileManager.default.copyItem(at: fileURL, to: backupURL)
@@ -96,7 +110,9 @@ final class HistoryStore: ObservableObject {
         do {
             let data = try encoder.encode(transactions)
             try data.write(to: fileURL, options: .atomic)
+            persistenceError = nil
         } catch {
+            persistenceError = "Impossibile salvare la cronologia: \(error.localizedDescription)"
             print("Failed to persist history.json: \(error)")
         }
     }

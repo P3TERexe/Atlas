@@ -33,7 +33,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var overlayWindowController: OverlayWindowController?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        BackupStore.prune()
+        let history = HistoryStore.shared
+        if history.loadSucceeded {
+            let backups = Set(history.transactions.filter(\.canRollback).flatMap { $0.backupURLs.values })
+            BackupStore.prune(preserving: backups)
+        }
         NSApp.setActivationPolicy(.accessory)
         
         overlayWindowController = OverlayWindowController()

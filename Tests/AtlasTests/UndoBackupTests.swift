@@ -41,10 +41,27 @@ final class UndoBackupTests: XCTestCase {
             ofItemAtPath: old.path
         )
 
-        BackupStore.prune(maxAgeDays: 30)
+        BackupStore.prune(maxAgeDays: 30, preserving: [])
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "La directory vecchia (> 30 giorni) va rimossa")
         XCTAssertTrue(FileManager.default.fileExists(atPath: recent.path), "La directory recente va conservata")
+    }
+
+    func testPrunePreservesReferencedOldBackup() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        BackupStore.rootOverride = root
+        let retained = try BackupStore.newBackupDirectory()
+        let orphan = try BackupStore.newBackupDirectory()
+        let backup = retained.appendingPathComponent("original.txt")
+        let bytes = Data("previous contents".utf8)
+        try bytes.write(to: backup)
+        for directory in [retained, orphan] {
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-40 * 86_400)], ofItemAtPath: directory.path)
+        }
+        BackupStore.prune(maxAgeDays: 30, preserving: [backup])
+        XCTAssertEqual(try Data(contentsOf: backup), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     }
 
     // MARK: - Rollback cleanup

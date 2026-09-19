@@ -32,7 +32,7 @@ class PDFPlugin: AtlasPlugin {
             ),
             ToolCapability(
                 id: "pdf.compress",
-                description: "Compresses a PDF to reduce its size using Ghostscript (fallback ImageMagick). Set 'quality' from 1 to 100 (default 60).",
+                description: "Compresses a PDF to reduce its size using Ghostscript while preserving pages and searchable text. Set 'quality' from 1 to 100 (default 60).",
                 inputFormats: ["pdf"],
                 outputFormats: ["pdf"],
                 executor: CompressPDFAction()
@@ -41,98 +41,55 @@ class PDFPlugin: AtlasPlugin {
     }
 }
 
-// MARK: - Shared input resolution
-
-enum PDFResolver {
-    static func resolveInputURLs(step: ActionStep, context: FinderContext) -> [URL] {
-        guard let currentDirectory = context.currentDirectory else { return [] }
-        
-        let matchingSelected = context.selectedFiles.filter { url in
-            url.pathExtension.lowercased() == "pdf"
-        }
-        
-        if !matchingSelected.isEmpty {
-            let selectedNames = Set(matchingSelected.map { $0.lastPathComponent })
-            let stepInputNames = Set(step.inputs)
-            if step.inputs.isEmpty || !stepInputNames.isDisjoint(with: selectedNames) {
-                return matchingSelected
-            }
-        }
-        
-        if !step.inputs.isEmpty {
-            return step.inputs.compactMap { inputPath in
-                let url = currentDirectory.appendingPathComponent(inputPath)
-                return FileManager.default.fileExists(atPath: url.path) ? url : nil
-            }
-        }
-        
-        guard let contents = try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return []
-        }
-        
-        return contents.filter { url in
-            url.pathExtension.lowercased() == "pdf"
-        }
-    }
-    
-    static func validateNonEmpty(step: ActionStep, context: FinderContext) throws {
-        guard !resolveInputURLs(step: step, context: context).isEmpty else {
-            throw ExecutorError.validationFailed("Nessun file PDF trovato nella cartella o tra i file selezionati.")
-        }
-    }
-    
-    static func uniqueURL(in directory: URL, baseName: String, extensionName: String) -> URL {
-        var candidate = directory.appendingPathComponent(baseName + "." + extensionName)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent(baseName + "-\(counter)." + extensionName)
-            counter += 1
-        }
-        return candidate
-    }
-}
-
 // MARK: - Merge
 
 final class MergePDFAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        let inputs = PDFResolver.resolveInputURLs(step: step, context: context)
+        let inputs = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
         guard inputs.count >= 2 else {
             throw ExecutorError.validationFailed("Servono almeno 2 file PDF da unire.")
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let inputs = PDFResolver.resolveInputURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
-        }
-        
-        let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "merged"
-        let baseName = (rawName as NSString).deletingPathExtension
-        let outputURL = PDFResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "pdf")
-        
-        let outputDocument = PDFDocument()
-        
-        for inputURL in inputs {
-            guard let document = PDFDocument(url: inputURL) else {
-                throw ExecutorError.executionFailed("Impossibile aprire \(inputURL.lastPathComponent)")
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        var outputFiles: [URL] = []
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
             }
-            for pageIndex in 0..<document.pageCount {
-                guard let page = document.page(at: pageIndex) else { continue }
-                outputDocument.insert(page, at: outputDocument.pageCount)
+
+            let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "merged"
+            let baseName = (rawName as NSString).deletingPathExtension
+            let outputURL = FileResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "pdf")
+            let outputDocument = PDFDocument()
+
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Unione: \(inputURL.lastPathComponent)")
+                let document = try readablePDF(at: inputURL, inputIndex: index + 1)
+                for pageIndex in 0..<document.pageCount {
+                    try Task.checkCancellation()
+                    guard let page = document.page(at: pageIndex), page.pageRef != nil else {
+                        throw ExecutorError.executionFailed("Pagina \(pageIndex + 1) non leggibile in \(inputURL.lastPathComponent) (input \(index + 1)).")
+                    }
+                    outputDocument.insert(page, at: outputDocument.pageCount)
+                }
             }
+
+            try await StagedOutput.write(to: outputURL, journal: &outputFiles) { temporaryURL in
+                guard outputDocument.write(to: temporaryURL) else {
+                    throw ExecutorError.executionFailed("Scrittura del PDF unito fallita.")
+                }
+            }
+            return ActionResult(
+                success: true,
+                outputFiles: outputFiles,
+                message: "Uniti \(inputs.count) PDF in \(outputURL.lastPathComponent) (\(outputDocument.pageCount) pagine)"
+            )
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        guard outputDocument.write(to: outputURL) else {
-            throw ExecutorError.executionFailed("Scrittura del PDF unito fallita.")
-        }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: [outputURL],
-            message: "Uniti \(inputs.count) PDF in \(outputURL.lastPathComponent) (\(outputDocument.pageCount) pagine)"
-        )
     }
 }
 
@@ -140,44 +97,41 @@ final class MergePDFAction: ActionExecutor {
 
 final class SplitPDFAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try PDFResolver.validateNonEmpty(step: step, context: context)
+        _ = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let inputs = PDFResolver.resolveInputURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
-        }
-        
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         var outputFiles: [URL] = []
-        
-        for inputURL in inputs {
-            guard let document = PDFDocument(url: inputURL) else {
-                throw ExecutorError.executionFailed("Impossibile aprire \(inputURL.lastPathComponent)")
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
             }
-            
-            let rawPrefix = step.format?.trimmingCharacters(in: .whitespacesAndNewlines) ?? inputURL.deletingPathExtension().lastPathComponent
-            let prefix = (rawPrefix as NSString).deletingPathExtension
-            
-            for pageIndex in 0..<document.pageCount {
-                guard let page = document.page(at: pageIndex) else { continue }
-                
-                let pageDocument = PDFDocument()
-                pageDocument.insert(page, at: 0)
-                
-                let outputURL = PDFResolver.uniqueURL(in: directory, baseName: "\(prefix)-page-\(pageIndex + 1)", extensionName: "pdf")
-                guard pageDocument.write(to: outputURL) else {
-                    throw ExecutorError.executionFailed("Scrittura pagina \(pageIndex + 1) fallita.")
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Divisione: \(inputURL.lastPathComponent)")
+                let document = try readablePDF(at: inputURL, inputIndex: index + 1)
+                let rawPrefix = step.format?.trimmingCharacters(in: .whitespacesAndNewlines) ?? inputURL.deletingPathExtension().lastPathComponent
+                let prefix = (rawPrefix as NSString).deletingPathExtension
+                for pageIndex in 0..<document.pageCount {
+                    try Task.checkCancellation()
+                    guard let page = document.page(at: pageIndex), page.pageRef != nil else {
+                        throw ExecutorError.executionFailed("Pagina \(pageIndex + 1) non leggibile in \(inputURL.lastPathComponent) (input \(index + 1)).")
+                    }
+                    let pageDocument = PDFDocument()
+                    pageDocument.insert(page, at: 0)
+                    let outputURL = FileResolver.uniqueURL(in: directory, baseName: "\(prefix)-page-\(pageIndex + 1)", extensionName: "pdf")
+                    try await StagedOutput.write(to: outputURL, journal: &outputFiles) { temporaryURL in
+                        guard pageDocument.write(to: temporaryURL) else {
+                            throw ExecutorError.executionFailed("Scrittura pagina \(pageIndex + 1) fallita.")
+                        }
+                    }
                 }
-                outputFiles.append(outputURL)
             }
+            return ActionResult(success: true, outputFiles: outputFiles, message: "Divisi in \(outputFiles.count) pagine PDF")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: outputFiles,
-            message: "Divisi in \(outputFiles.count) pagine PDF"
-        )
     }
 }
 
@@ -185,82 +139,82 @@ final class SplitPDFAction: ActionExecutor {
 
 final class CompressPDFAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try PDFResolver.validateNonEmpty(step: step, context: context)
+        _ = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
     }
     
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
-        let inputs = PDFResolver.resolveInputURLs(step: step, context: context)
+        guard let inputs = try? InputResolver.resolve(step: step, context: context, extensions: ["pdf"]) else { return nil }
         guard !inputs.isEmpty, let directory = context.currentDirectory else { return nil }
         
         let quality = step.quality ?? 60
         let setting = Self.pdfSetting(for: quality)
         
         return inputs.map { inputURL in
-            let outputURL = PDFResolver.uniqueURL(in: directory, baseName: inputURL.deletingPathExtension().lastPathComponent + "-compressed", extensionName: "pdf")
-            return "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/\(setting) -dNOPAUSE -dQUIET -dBATCH -sOutputFile=\(outputURL.path) \(inputURL.path)"
+            let outputURL = FileResolver.uniqueURL(in: directory, baseName: inputURL.deletingPathExtension().lastPathComponent + "-compressed", extensionName: "pdf")
+            return ([BinaryLocator.locate("gs") ?? "gs"] + Self.arguments(input: inputURL, output: outputURL, setting: setting)).map(ZipFilesAction.shellQuote).joined(separator: " ")
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let inputs = PDFResolver.resolveInputURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
-        }
-        
-        let quality = step.quality ?? 60
-        let setting = Self.pdfSetting(for: quality)
-        
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         var outputFiles: [URL] = []
-        var compressedAny = false
-        
-        for inputURL in inputs {
-            let outputURL = PDFResolver.uniqueURL(in: directory, baseName: inputURL.deletingPathExtension().lastPathComponent + "-compressed", extensionName: "pdf")
-            
-            if let gs = Self.ghostscriptBinary() {
-                let status = try await run(binary: gs, arguments: [
-                    "-sDEVICE=pdfwrite",
-                    "-dCompatibilityLevel=1.4",
-                    "-dPDFSETTINGS=/\(setting)",
-                    "-dNOPAUSE",
-                    "-dQUIET",
-                    "-dBATCH",
-                    "-sOutputFile=\(outputURL.path)",
-                    inputURL.path
-                ])
-                if status == 0 && FileManager.default.fileExists(atPath: outputURL.path) {
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: ["pdf"])
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+            }
+            guard let gs = BinaryLocator.locate("gs") else {
+                throw ExecutorError.executionFailed("Compressione PDF richiede Ghostscript. Installa Ghostscript (brew install ghostscript).")
+            }
+            let setting = Self.pdfSetting(for: step.quality ?? 60)
+            var unchangedCount = 0
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Compressione: \(inputURL.lastPathComponent)")
+                let source = try readablePDF(at: inputURL, inputIndex: index + 1)
+                let outputURL = FileResolver.uniqueURL(in: directory, baseName: inputURL.deletingPathExtension().lastPathComponent + "-compressed", extensionName: "pdf")
+                let temporaryURL = directory.appendingPathComponent(".atlas-output-\(UUID().uuidString).pdf")
+                outputFiles.append(temporaryURL)
+                let result = try await AsyncProcessRunner.run(
+                    executableURL: URL(fileURLWithPath: gs),
+                    arguments: Self.arguments(input: inputURL, output: temporaryURL, setting: setting)
+                )
+                guard result.isSuccess else {
+                    throw ExecutorError.executionFailed("Ghostscript fallito per \(inputURL.lastPathComponent) (input \(index + 1), codice \(result.exitCode)): \(result.stderr)")
+                }
+                let compressed = try readablePDF(at: temporaryURL, inputIndex: index + 1)
+                guard compressed.pageCount == source.pageCount else {
+                    throw ExecutorError.executionFailed("Compressione di \(inputURL.lastPathComponent): numero di pagine alterato (input \(index + 1)).")
+                }
+                for pageIndex in 0..<source.pageCount {
+                    try Task.checkCancellation()
+                    let originalText = Self.searchableText(source.page(at: pageIndex)?.string)
+                    let compressedText = Self.searchableText(compressed.page(at: pageIndex)?.string)
+                    guard originalText == compressedText else {
+                        throw ExecutorError.executionFailed("Compressione di \(inputURL.lastPathComponent): testo alterato a pagina \(pageIndex + 1) (input \(index + 1)).")
+                    }
+                }
+                let originalSize = try inputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                let compressedSize = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                guard let originalSize, let compressedSize else {
+                    throw ExecutorError.executionFailed("Impossibile verificare la dimensione di \(inputURL.lastPathComponent).")
+                }
+                try Task.checkCancellation()
+                if compressedSize >= originalSize {
+                    try FileManager.default.removeItem(at: temporaryURL)
+                    outputFiles.removeAll { $0 == temporaryURL }
+                    unchangedCount += 1
+                } else {
+                    try FileManager.default.moveItem(at: temporaryURL, to: outputURL)
+                    outputFiles.removeAll { $0 == temporaryURL }
                     outputFiles.append(outputURL)
-                    compressedAny = true
-                    continue
                 }
             }
-            
-            if let magick = Self.imageMagickBinary() {
-                let density = setting == "screen" ? "96" : setting == "ebook" ? "150" : "200"
-                let magickQuality = setting == "screen" ? "50" : setting == "ebook" ? "70" : "90"
-                let status = try await run(binary: magick, arguments: [
-                    "-density", density,
-                    "-compress", "JPEG",
-                    "-quality", magickQuality,
-                    inputURL.path,
-                    outputURL.path
-                ])
-                if status == 0 && FileManager.default.fileExists(atPath: outputURL.path) {
-                    outputFiles.append(outputURL)
-                    compressedAny = true
-                    continue
-                }
-            }
-            
-            throw ExecutorError.executionFailed(
-                "Nessuno strumento di compressione disponibile. Installa Ghostscript (brew install ghostscript) o ImageMagick (brew install imagemagick)."
-            )
+            let noReduction = "Nessuna riduzione ottenuta; originale conservato"
+            let message = outputFiles.isEmpty ? noReduction : "Compressi \(outputFiles.count) PDF (livello \(setting))" + (unchangedCount > 0 ? ". \(noReduction) per \(unchangedCount) PDF." : "")
+            return ActionResult(success: true, outputFiles: outputFiles, message: message)
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        return ActionResult(
-            success: compressedAny,
-            outputFiles: outputFiles,
-            message: compressedAny ? "Compressi \(outputFiles.count) PDF (livello \(setting))" : "Nessun PDF compresso."
-        )
     }
     
     // MARK: Helpers
@@ -271,27 +225,13 @@ final class CompressPDFAction: ActionExecutor {
         return "printer"
     }
     
-    private static func ghostscriptBinary() -> String? {
-        for path in ["/opt/homebrew/bin/gs", "/usr/local/bin/gs", "/usr/bin/gs"] {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        return nil
+    private static func arguments(input: URL, output: URL, setting: String) -> [String] {
+        ["-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", "-dPDFSETTINGS=/\(setting)",
+         "-dNOPAUSE", "-dQUIET", "-dBATCH", "-sOutputFile=\(output.path)", input.path]
     }
-    
-    private static func imageMagickBinary() -> String? {
-        for path in ["/opt/homebrew/bin/magick", "/usr/local/bin/magick"] {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        return nil
-    }
-    
-    private func run(binary: String, arguments: [String]) async throws -> Int32 {
-        let result = try await AsyncProcessRunner.run(executableURL: URL(fileURLWithPath: binary), arguments: arguments)
-        return result.exitCode
+
+    private static func searchableText(_ text: String?) -> String {
+        (text ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
 
@@ -299,65 +239,60 @@ final class CompressPDFAction: ActionExecutor {
 
 final class ImagesToPDFAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        let inputs = resolveImageURLs(step: step, context: context)
-        guard !inputs.isEmpty else {
-            throw ExecutorError.validationFailed("Nessuna immagine trovata da unire in PDF.")
-        }
+        _ = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.image)
     }
     
     func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
-        let inputs = resolveImageURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        var outputFiles: [URL] = []
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.image)
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+            }
+            let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "combined"
+            let baseName = (rawName as NSString).deletingPathExtension
+            let outputURL = FileResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "pdf")
+            let pdfDocument = PDFDocument()
+            var pagesAdded = 0
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Generazione pagina \(index + 1)/\(inputs.count): \(inputURL.lastPathComponent)")
+                guard let image = NSImage(contentsOf: inputURL), image.isValid,
+                      let pdfPage = PDFPage(image: image) else {
+                    throw ExecutorError.executionFailed("Immagine non leggibile: \(inputURL.lastPathComponent) (input/pagina \(index + 1)).")
+                }
+                pdfDocument.insert(pdfPage, at: pdfDocument.pageCount)
+                pagesAdded += 1
+            }
+            try await StagedOutput.write(to: outputURL, journal: &outputFiles) { temporaryURL in
+                guard pagesAdded > 0, pdfDocument.write(to: temporaryURL) else {
+                    throw ExecutorError.executionFailed("Creazione del PDF dalle immagini fallita.")
+                }
+            }
+            return ActionResult(success: true, outputFiles: outputFiles, message: "Create \(pagesAdded) pagine in \(outputURL.lastPathComponent) a partire da \(inputs.count) immagini")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        let rawName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "combined"
-        let baseName = (rawName as NSString).deletingPathExtension
-        let outputURL = PDFResolver.uniqueURL(in: directory, baseName: baseName, extensionName: "pdf")
-        
-        let pdfDocument = PDFDocument()
-        var pagesAdded = 0
-        
-        for (index, inputURL) in inputs.enumerated() {
-            progress?(index + 1, inputs.count, "Generazione pagina \(index + 1)/\(inputs.count): \(inputURL.lastPathComponent)")
-            guard let image = NSImage(contentsOf: inputURL),
-                  let pdfPage = PDFPage(image: image) else { continue }
-            pdfDocument.insert(pdfPage, at: pdfDocument.pageCount)
-            pagesAdded += 1
-        }
-        
-        guard pagesAdded > 0, pdfDocument.write(to: outputURL) else {
-            throw ExecutorError.executionFailed("Creazione del PDF dalle immagini fallita.")
-        }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: [outputURL],
-            message: "Create \(pagesAdded) pagine in \(outputURL.lastPathComponent) a partire da \(inputs.count) immagini"
-        )
     }
     
-    private func resolveImageURLs(step: ActionStep, context: FinderContext) -> [URL] {
-        guard let currentDirectory = context.currentDirectory else { return [] }
-        let imageExts = MediaFormats.image
-        
-        let matchingSelected = context.selectedFiles.filter { url in
-            imageExts.contains(url.pathExtension.lowercased())
-        }
-        
-        if !matchingSelected.isEmpty {
-            return matchingSelected
-        }
-        
-        if !step.inputs.isEmpty {
-            return step.inputs.compactMap { inputPath in
-                let url = currentDirectory.appendingPathComponent(inputPath)
-                return FileManager.default.fileExists(atPath: url.path) ? url : nil
-            }
-        }
-        
-        return context.visibleFiles.filter { url in
-            imageExts.contains(url.pathExtension.lowercased())
+}
+
+/// Reject empty, locked, or partially unreadable documents before publishing output.
+private func readablePDF(at url: URL, inputIndex: Int) throws -> PDFDocument {
+    guard let document = PDFDocument(url: url) else {
+        throw ExecutorError.executionFailed("PDF non leggibile: \(url.lastPathComponent) (input \(inputIndex), pagina 1).")
+    }
+    guard !document.isLocked else {
+        throw ExecutorError.executionFailed("PDF bloccato: \(url.lastPathComponent) (input \(inputIndex), pagina 1).")
+    }
+    guard document.pageCount > 0 else {
+        throw ExecutorError.executionFailed("PDF senza pagine leggibili: \(url.lastPathComponent) (input \(inputIndex), pagina 1).")
+    }
+    for pageIndex in 0..<document.pageCount {
+        try Task.checkCancellation()
+        guard let page = document.page(at: pageIndex), page.pageRef != nil else {
+            throw ExecutorError.executionFailed("Pagina \(pageIndex + 1) non leggibile in \(url.lastPathComponent) (input \(inputIndex)).")
         }
     }
+    return document
 }

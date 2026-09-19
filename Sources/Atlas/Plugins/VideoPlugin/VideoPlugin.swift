@@ -28,74 +28,21 @@ class VideoPlugin: AtlasPlugin {
     }
 }
 
-// MARK: - Shared input resolution
-
-enum VideoResolver {
-    static let videoExtensions: Set<String> = MediaFormats.video
-    
-    static func resolveInputURLs(step: ActionStep, context: FinderContext) -> [URL] {
-        guard let currentDirectory = context.currentDirectory else { return [] }
-        
-        let matchingSelected = context.selectedFiles.filter { url in
-            videoExtensions.contains(url.pathExtension.lowercased())
-        }
-        
-        if !matchingSelected.isEmpty {
-            let selectedNames = Set(matchingSelected.map { $0.lastPathComponent })
-            let stepInputNames = Set(step.inputs)
-            if step.inputs.isEmpty || !stepInputNames.isDisjoint(with: selectedNames) {
-                return matchingSelected
-            }
-        }
-        
-        if !step.inputs.isEmpty {
-            return step.inputs.compactMap { inputPath in
-                let url = currentDirectory.appendingPathComponent(inputPath)
-                return FileManager.default.fileExists(atPath: url.path) ? url : nil
-            }
-        }
-        
-        guard let contents = try? FileManager.default.contentsOfDirectory(at: currentDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return []
-        }
-        
-        return contents.filter { url in
-            videoExtensions.contains(url.pathExtension.lowercased())
-        }
-    }
-    
-    static func validateNonEmpty(step: ActionStep, context: FinderContext) throws {
-        guard !resolveInputURLs(step: step, context: context).isEmpty else {
-            throw ExecutorError.validationFailed("Nessun file video trovato nella cartella o tra i file selezionati.")
-        }
-    }
-    
-    static func uniqueURL(in directory: URL, baseName: String, extensionName: String) -> URL {
-        var candidate = directory.appendingPathComponent(baseName + "." + extensionName)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent(baseName + "-\(counter)." + extensionName)
-            counter += 1
-        }
-        return candidate
-    }
-}
-
 // MARK: - Extract Audio
 
 final class ExtractAudioAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try VideoResolver.validateNonEmpty(step: step, context: context)
+        _ = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)
     }
     
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
-        let inputs = VideoResolver.resolveInputURLs(step: step, context: context)
+        guard let inputs = try? InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video) else { return nil }
         guard !inputs.isEmpty, let directory = context.currentDirectory else { return nil }
         
         let format = (step.format?.lowercased() ?? "m4a")
         
         return inputs.map { inputURL in
-            let outputURL = VideoResolver.uniqueURL(
+            let outputURL = FileResolver.uniqueURL(
                 in: directory,
                 baseName: inputURL.deletingPathExtension().lastPathComponent + "-audio",
                 extensionName: format == "mp3" ? "mp3" : "m4a"
@@ -108,63 +55,57 @@ final class ExtractAudioAction: ActionExecutor {
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let inputs = VideoResolver.resolveInputURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
-        }
-        
-        let format = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "m4a"
-        
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         var outputFiles: [URL] = []
-        
-        for inputURL in inputs {
-            let outputURL = VideoResolver.uniqueURL(
-                in: directory,
-                baseName: inputURL.deletingPathExtension().lastPathComponent + "-audio",
-                extensionName: format == "mp3" ? "mp3" : "m4a"
-            )
-            
-            if format == "mp3" {
-                guard let ffmpeg = Self.ffmpegBinary() else {
-                    throw ExecutorError.executionFailed("L'estrazione in MP3 richiede ffmpeg. Installa con: brew install ffmpeg")
-                }
-                let status = try await run(binary: ffmpeg, arguments: [
-                    "-i", inputURL.path,
-                    "-vn", "-c:a", "libmp3lame", "-q:a", "2",
-                    "-y", outputURL.path
-                ])
-                guard status == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
-                    throw ExecutorError.executionFailed("Estrazione MP3 fallita per \(inputURL.lastPathComponent)")
-                }
-            } else {
-                // Try 1: Native AVFoundation passthrough (m4a, no external tools)
-                do {
-                    try await Self.extractAudioNative(inputURL: inputURL, outputURL: outputURL)
-                } catch {
-                    // Try 2: ffmpeg fallback (codec audio non compatibile col passthrough)
-                    guard let ffmpeg = Self.ffmpegBinary() else {
-                        throw error
-                    }
-                    let status = try await run(binary: ffmpeg, arguments: [
-                        "-i", inputURL.path,
-                        "-vn", "-c:a", "aac", "-b:a", "192k",
-                        "-y", outputURL.path
-                    ])
-                    guard status == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
-                        throw ExecutorError.executionFailed("Estrazione audio fallita per \(inputURL.lastPathComponent)")
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+            }
+            let format = step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "m4a"
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Estrazione audio: \(inputURL.lastPathComponent)")
+                let outputURL = FileResolver.uniqueURL(
+                    in: directory,
+                    baseName: inputURL.deletingPathExtension().lastPathComponent + "-audio",
+                    extensionName: format == "mp3" ? "mp3" : "m4a"
+                )
+                try await StagedOutput.write(to: outputURL, journal: &outputFiles) { temporaryURL in
+                    if format == "mp3" {
+                        guard let ffmpeg = Self.ffmpegBinary() else {
+                            throw ExecutorError.executionFailed("L'estrazione in MP3 richiede ffmpeg. Installa con: brew install ffmpeg")
+                        }
+                        let status = try await run(binary: ffmpeg, arguments: [
+                            "-i", inputURL.path, "-vn", "-c:a", "libmp3lame", "-q:a", "2", "-y", temporaryURL.path
+                        ])
+                        guard status == 0, FileManager.default.fileExists(atPath: temporaryURL.path) else {
+                            throw ExecutorError.executionFailed("Estrazione MP3 fallita per \(inputURL.lastPathComponent)")
+                        }
+                    } else {
+                        do {
+                            try await Self.extractAudioNative(inputURL: inputURL, outputURL: temporaryURL)
+                        } catch {
+                            if error is CancellationError { throw error }
+                            try Task.checkCancellation()
+                            guard let ffmpeg = Self.ffmpegBinary() else { throw error }
+                            if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                                try FileManager.default.removeItem(at: temporaryURL)
+                            }
+                            let status = try await run(binary: ffmpeg, arguments: [
+                                "-i", inputURL.path, "-vn", "-c:a", "aac", "-b:a", "192k", "-y", temporaryURL.path
+                            ])
+                            guard status == 0, FileManager.default.fileExists(atPath: temporaryURL.path) else {
+                                throw ExecutorError.executionFailed("Estrazione audio fallita per \(inputURL.lastPathComponent)")
+                            }
+                        }
                     }
                 }
             }
-            
-            outputFiles.append(outputURL)
+            return ActionResult(success: true, outputFiles: outputFiles, message: "Estratto l'audio da \(outputFiles.count) video (\(format.uppercased()))")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: outputFiles,
-            message: "Estratto l'audio da \(outputFiles.count) video (\(format.uppercased()))"
-        )
     }
     
     // MARK: Native AVFoundation extraction (m4a, no external tools)
@@ -185,6 +126,10 @@ final class ExtractAudioAction: ActionExecutor {
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
         let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: formatDescriptions.first)
         writer.add(writerInput)
+        defer {
+            if reader.status == .reading { reader.cancelReading() }
+            if writer.status == .writing { writer.cancelWriting() }
+        }
         
         guard reader.startReading(), writer.startWriting() else {
             throw ExecutorError.executionFailed("Impossibile avviare l'estrazione audio per \(inputURL.lastPathComponent)")
@@ -216,7 +161,18 @@ final class ExtractAudioAction: ActionExecutor {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         
-        await writer.finishWriting()
+        try Task.checkCancellation()
+        guard reader.status == .completed, writer.status == .writing else {
+            throw ExecutorError.executionFailed("Lettura audio fallita per \(inputURL.lastPathComponent): \(reader.error?.localizedDescription ?? writer.error?.localizedDescription ?? "stato non valido")")
+        }
+        writer.finishWriting(completionHandler: {})
+        while writer.status == .writing {
+            guard Date() <= deadline else {
+                throw ExecutorError.executionFailed("Timeout durante la scrittura audio di \(inputURL.lastPathComponent)")
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try Task.checkCancellation()
         
         guard reader.status == .completed, writer.status == .completed else {
             let readerDetail = reader.error?.localizedDescription ?? reader.status.rawValue.description
@@ -226,12 +182,7 @@ final class ExtractAudioAction: ActionExecutor {
     }
     
     private static func ffmpegBinary() -> String? {
-        for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        return nil
+        BinaryLocator.locate("ffmpeg")
     }
     
     private func run(binary: String, arguments: [String]) async throws -> Int32 {
@@ -244,92 +195,76 @@ final class ExtractAudioAction: ActionExecutor {
 
 final class ConvertVideoAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
-        try VideoResolver.validateNonEmpty(step: step, context: context)
+        _ = try Self.containerFormat(for: step.format ?? "mp4")
+        _ = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)
     }
     
     func shellCommands(step: ActionStep, context: FinderContext) -> [String]? {
-        let inputs = VideoResolver.resolveInputURLs(step: step, context: context)
+        guard let inputs = try? InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video) else { return nil }
         guard !inputs.isEmpty, let directory = context.currentDirectory else { return nil }
         
-        let format = (step.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "mp4").replacingOccurrences(of: ".", with: "")
-        let scale = Self.ffmpegScale(for: step.quality ?? 75)
+        guard let format = try? Self.containerFormat(for: step.format ?? "mp4") else { return nil }
         
         return inputs.map { inputURL in
-            let outputURL = VideoResolver.uniqueURL(
+            let outputURL = FileResolver.uniqueURL(
                 in: directory,
                 baseName: inputURL.deletingPathExtension().lastPathComponent,
                 extensionName: format
             )
-            return "ffmpeg -i \(inputURL.path) -c:v libx264 -preset medium \(scale) -c:a aac -b:a 128k -y \(outputURL.path)"
+            return ([BinaryLocator.locate("ffmpeg") ?? "ffmpeg"] + Self.arguments(inputURL: inputURL, outputURL: outputURL, quality: step.quality ?? 75)).map(ZipFilesAction.shellQuote).joined(separator: " ")
         }
     }
     
-    func execute(step: ActionStep, context: FinderContext) async throws -> ActionResult {
-        let inputs = VideoResolver.resolveInputURLs(step: step, context: context)
-        guard let directory = context.currentDirectory else {
-            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
-        }
-        guard let ffmpeg = Self.ffmpegBinary() else {
-            throw ExecutorError.executionFailed("La conversione video richiede ffmpeg. Installa con: brew install ffmpeg")
-        }
-        
-        let quality = step.quality ?? 75
-        let scale = Self.ffmpegScale(for: quality)
-        let containerFormat = Self.containerFormat(for: step.format ?? "mp4")
-        let fileExtension = containerFormat == "mov" ? "mov" : "mp4"
-        
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         var outputFiles: [URL] = []
-        var converted = 0
-        
-        for inputURL in inputs {
-            let outputURL = VideoResolver.uniqueURL(
-                in: directory,
-                baseName: inputURL.deletingPathExtension().lastPathComponent,
-                extensionName: fileExtension
-            )
-            
-            let status = try await run(binary: ffmpeg, arguments: [
-                "-i", inputURL.path,
-                "-c:v", "libx264", "-preset", "medium", scale,
-                "-c:a", "aac", "-b:a", "128k",
-                "-y", outputURL.path
-            ])
-            guard status == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
-                throw ExecutorError.executionFailed("Conversione fallita per \(inputURL.lastPathComponent)")
+        do {
+            let inputs = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.video)
+            guard let directory = context.currentDirectory else {
+                throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
             }
-            outputFiles.append(outputURL)
-            converted += 1
-        }
-        
-        return ActionResult(
-            success: true,
-            outputFiles: outputFiles,
-            message: "Convertiti \(converted) video in \(fileExtension.uppercased())"
-        )
-    }
-    
-    private static func ffmpegScale(for quality: Int) -> String {
-        if quality < 40 { return "-vf scale=640:480" }
-        if quality < 70 { return "-vf scale=960:540" }
-        if quality < 90 { return "-vf scale=1280:720" }
-        return "-vf scale=1920:1080"
-    }
-    
-    private static func containerFormat(for raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: ".", with: "")
-    }
-    
-    private static func ffmpegBinary() -> String? {
-        for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"] {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
+            let fileExtension = try Self.containerFormat(for: step.format ?? "mp4")
+            guard let ffmpeg = BinaryLocator.locate("ffmpeg") else {
+                throw ExecutorError.executionFailed("La conversione video richiede ffmpeg. Installa con: brew install ffmpeg")
             }
+            for (index, inputURL) in inputs.enumerated() {
+                try Task.checkCancellation()
+                progress?(index + 1, inputs.count, "Conversione: \(inputURL.lastPathComponent)")
+                let outputURL = FileResolver.uniqueURL(in: directory, baseName: inputURL.deletingPathExtension().lastPathComponent, extensionName: fileExtension)
+                try await StagedOutput.write(to: outputURL, journal: &outputFiles) { temporaryURL in
+                    let result = try await AsyncProcessRunner.run(
+                        executableURL: URL(fileURLWithPath: ffmpeg),
+                        arguments: Self.arguments(inputURL: inputURL, outputURL: temporaryURL, quality: step.quality ?? 75)
+                    )
+                    guard result.isSuccess, FileManager.default.fileExists(atPath: temporaryURL.path) else {
+                        throw ExecutorError.executionFailed("Conversione fallita per \(inputURL.lastPathComponent): \(result.stderr)")
+                    }
+                }
+            }
+            return ActionResult(success: true, outputFiles: outputFiles, message: "Convertiti \(outputFiles.count) video in \(fileExtension.uppercased())")
+        } catch {
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputFiles, message: nil))
         }
-        return nil
     }
     
-    private func run(binary: String, arguments: [String]) async throws -> Int32 {
-        let result = try await AsyncProcessRunner.run(executableURL: URL(fileURLWithPath: binary), arguments: arguments)
-        return result.exitCode
+    static func ffmpegScaleFilter(for quality: Int) -> String {
+        let bounds: String
+        if quality < 40 { bounds = "640:480" }
+        else if quality < 70 { bounds = "960:540" }
+        else if quality < 90 { bounds = "1280:720" }
+        else { bounds = "1920:1080" }
+        return "scale=\(bounds):force_original_aspect_ratio=decrease:force_divisible_by=2"
+    }
+
+    private static func arguments(inputURL: URL, outputURL: URL, quality: Int) -> [String] {
+        ["-i", inputURL.path, "-c:v", "libx264", "-preset", "medium",
+         "-vf", ffmpegScaleFilter(for: quality), "-c:a", "aac", "-b:a", "128k", "-y", outputURL.path]
+    }
+
+    private static func containerFormat(for raw: String) throws -> String {
+        let format = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["mp4", "mov"].contains(format) else {
+            throw ExecutorError.validationFailed("Formato video non supportato: \(raw). Usa mp4 o mov.")
+        }
+        return format
     }
 }

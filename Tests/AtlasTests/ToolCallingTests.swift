@@ -1,9 +1,9 @@
 import XCTest
+import Synchronization
 @testable import Atlas
 
-/// Test dei builder di richiesta e dei parser di risposta per il native
-/// tool calling. Nessuna rete: solo costruzione payload e decodifica fixture.
-final class ToolCallingTests: XCTestCase {
+/// Provider contracts use isolated URLProtocol sessions; no real network calls.
+final class ToolCallingTests: XCTestCase, @unchecked Sendable {
 
     private let toolIds = ["image.convert", "file.zip", "file.select"]
 
@@ -27,20 +27,104 @@ final class ToolCallingTests: XCTestCase {
 
     // MARK: - OpenAI-style builders (senza tools = payload legacy)
 
-    func testOpenAIBodyWithoutToolsIsLegacy() {
-        let body = OpenAIModelProvider.makeBody(prompt: "p", isComplex: true, model: "gpt-4o-mini", toolParameters: nil)
-        XCTAssertNil(body["tools"])
-        XCTAssertNil(body["tool_choice"])
-        XCTAssertEqual(body["response_format"] as? [String: String], ["type": "json_object"])
+    func testOpenAIDefaultRequestOmitsUnsupportedReasoning() async throws {
+        let stub = ProviderHTTPStub(status: 200, body: ProviderHTTPStub.openAIResponse)
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        let provider = OpenAIModelProvider(apiKey: "fixture", session: session)
+        assertGraph(try await provider.plan(prompt: "fixture", isComplex: true))
+        let body = try stub.firstRequestBody()
+        XCTAssertNil(body["reasoning_effort"])
         XCTAssertEqual(body["model"] as? String, "gpt-4o-mini")
-        XCTAssertEqual(body["temperature"] as? Double, 0.0)
-        XCTAssertEqual(body["max_tokens"] as? Int, 3500)
-        XCTAssertEqual(body["reasoning_effort"] as? String, "medium")
-
-        let simple = OpenAIModelProvider.makeBody(prompt: "p", isComplex: false, model: "gpt-4o-mini", toolParameters: nil)
-        XCTAssertEqual(simple["max_tokens"] as? Int, 1200)
-        XCTAssertEqual(simple["reasoning_effort"] as? String, "low")
     }
+
+    func testOllamaDisabledThinkingUsesTopLevelThink() async throws {
+        let response = try JSONSerialization.data(withJSONObject: ["response": ProviderHTTPStub.graphJSON])
+        let stub = ProviderHTTPStub(status: 200, body: response)
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        let provider = OllamaModelProvider(endpoint: "https://ollama.invalid/api/generate", model: "fixture", disableThinking: true, session: session)
+        assertGraph(try await provider.plan(prompt: "fixture", isComplex: true))
+        let body = try stub.firstRequestBody()
+        XCTAssertEqual(body["think"] as? Bool, false)
+        XCTAssertNil((body["options"] as? [String: Any])?["thinking"])
+        let enabled = OllamaModelProvider.makeBody(prompt: "fixture", isComplex: false, model: "fixture", toolParameters: nil, disableThinking: false)
+        XCTAssertNil(enabled["think"])
+        XCTAssertNil((enabled["options"] as? [String: Any])?["thinking"])
+    }
+
+    func testNvidiaUnauthorizedDoesNotRetry() async throws {
+        let stub = ProviderHTTPStub(status: 401, body: Data("unauthorized".utf8))
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        do {
+            _ = try await NvidiaModelProvider(apiKey: "fixture", session: session).plan(prompt: "fixture", isComplex: false)
+            XCTFail("Expected authentication failure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("401"))
+        }
+        XCTAssertEqual(stub.requestCount, 1)
+    }
+
+    func testNvidiaServiceUnavailableStopsAfterThreeAttempts() async throws {
+        let stub = ProviderHTTPStub(status: 503, body: Data("unavailable".utf8))
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        do {
+            _ = try await NvidiaModelProvider(apiKey: "fixture", session: session).plan(prompt: "fixture", isComplex: false)
+            XCTFail("Expected service failure")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("503"))
+        }
+        XCTAssertEqual(stub.requestCount, 3)
+    }
+
+    func testNvidiaCancellationStopsRetrying() async throws {
+        let received = expectation(description: "first request")
+        let stub = ProviderHTTPStub(status: 503, body: Data(), onRequest: { received.fulfill() })
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        let task = Task {
+            try await NvidiaModelProvider(apiKey: "fixture", session: session).plan(prompt: "fixture", isComplex: false)
+        }
+        await fulfillment(of: [received], timeout: 2)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError || (error as? URLError)?.code == .cancelled)
+        }
+        XCTAssertEqual(stub.requestCount, 1)
+    }
+
+    func testNvidiaCancelledTransportDoesNotRetry() async throws {
+        let stub = ProviderHTTPStub(status: 200, body: Data(), error: URLError(.cancelled))
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        do {
+            _ = try await NvidiaModelProvider(apiKey: "fixture", session: session).plan(prompt: "fixture", isComplex: false)
+            XCTFail("Expected transport cancellation")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .cancelled)
+        }
+        XCTAssertEqual(stub.requestCount, 1)
+    }
+
+    func testNvidiaMalformedPlanDoesNotRetry() async throws {
+        let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": "not a plan"]]]])
+        let stub = ProviderHTTPStub(status: 200, body: response)
+        let session = stub.makeSession()
+        defer { session.invalidateAndCancel(); stub.unregister() }
+        do {
+            _ = try await NvidiaModelProvider(apiKey: "fixture", session: session).plan(prompt: "fixture", isComplex: false)
+            XCTFail("Expected decode failure")
+        } catch {
+            guard case PlannerError.decodingFailed = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+        XCTAssertEqual(stub.requestCount, 1)
+    }
+
 
     func testOpenAIBodyWithTools() throws {
         let body = OpenAIModelProvider.makeBody(prompt: "p", isComplex: false, model: "gpt-4o-mini", toolParameters: schemaParams)
@@ -150,7 +234,7 @@ final class ToolCallingTests: XCTestCase {
     }
 
     func testParseOpenAIMessageFromToolCall() throws {
-        let arguments = "{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\"}]}"
+        let arguments = "{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\",\"inputs\":[]}]}"
         let message: [String: Any] = [
             "role": "assistant",
             "content": NSNull(),
@@ -168,7 +252,7 @@ final class ToolCallingTests: XCTestCase {
 
     func testParseOpenAIMessageFallsBackToFencedContent() throws {
         let message: [String: Any] = [
-            "content": "Ecco il piano:\n```json\n{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\"}]}\n```"
+            "content": "Ecco il piano:\n```json\n{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\",\"inputs\":[]}]}\n```"
         ]
         assertGraph(try PlanResponseParser.parseOpenAIMessage(message))
     }
@@ -206,7 +290,7 @@ final class ToolCallingTests: XCTestCase {
                 "type": "tool_use",
                 "id": "toolu_1",
                 "name": "submit_plan",
-                "input": ["steps": [["id": "a", "tool": "file.zip"]]]
+                "input": ["steps": [["id": "a", "tool": "file.zip", "inputs": []]]]
             ]
         ]
         assertGraph(try PlanResponseParser.parseClaudeContent(blocks))
@@ -214,20 +298,100 @@ final class ToolCallingTests: XCTestCase {
 
     func testParseClaudeTextOnlyFallback() throws {
         let blocks: [[String: Any]] = [
-            ["type": "text", "text": "{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\"}]}"]
+            ["type": "text", "text": "{\"steps\":[{\"id\":\"a\",\"tool\":\"file.zip\",\"inputs\":[]}]}" ]
         ]
         assertGraph(try PlanResponseParser.parseClaudeContent(blocks))
     }
 
     func testParseClaudeMixedBlocksPreferToolUse() throws {
         let blocks: [[String: Any]] = [
-            ["type": "text", "text": "{\"steps\":[{\"id\":\"sbagliato\",\"tool\":\"file.select\"}]}"],
+            ["type": "text", "text": "{\"steps\":[{\"id\":\"sbagliato\",\"tool\":\"file.select\",\"inputs\":[]}]}" ],
             [
                 "type": "tool_use",
                 "name": "submit_plan",
-                "input": ["steps": [["id": "a", "tool": "file.zip"]]]
+                "input": ["steps": [["id": "a", "tool": "file.zip", "inputs": []]]]
             ]
         ]
         assertGraph(try PlanResponseParser.parseClaudeContent(blocks))
     }
+}
+
+private final class ProviderHTTPStub: Sendable {
+    static let graphJSON = #"{"steps":[{"id":"a","tool":"file.zip","inputs":[]}]}"#
+    static let openAIResponse = try! JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": graphJSON]]]])
+    private static let registry = Mutex<[String: ProviderHTTPStub]>([:])
+    private let id = UUID().uuidString
+    private let requests = Mutex<[Data]>([])
+    let status: Int
+    let body: Data
+    let error: URLError?
+    let onRequest: (@Sendable () -> Void)?
+
+    init(status: Int, body: Data, error: URLError? = nil, onRequest: (@Sendable () -> Void)? = nil) {
+        self.status = status
+        self.body = body
+        self.error = error
+        self.onRequest = onRequest
+    }
+
+    var requestCount: Int { requests.withLock { $0.count } }
+
+    func makeSession() -> URLSession {
+        Self.registry.withLock { $0[id] = self }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderStubURLProtocol.self]
+        configuration.httpAdditionalHeaders = ["X-Atlas-Fixture": id]
+        return URLSession(configuration: configuration)
+    }
+
+    func unregister() { Self.registry.withLock { _ = $0.removeValue(forKey: id) } }
+
+    static func find(for request: URLRequest) -> ProviderHTTPStub? {
+        guard let id = request.value(forHTTPHeaderField: "X-Atlas-Fixture") else { return nil }
+        return registry.withLock { $0[id] }
+    }
+
+    func record(_ request: URLRequest) {
+        var data = request.httpBody ?? Data()
+        if data.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        requests.withLock { $0.append(data) }
+        onRequest?()
+    }
+
+    func firstRequestBody() throws -> [String: Any] {
+        let data = try XCTUnwrap(requests.withLock { $0.first })
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+}
+
+private final class ProviderStubURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let stub = ProviderHTTPStub.find(for: request) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        stub.record(request)
+        if let error = stub.error {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: stub.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: stub.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

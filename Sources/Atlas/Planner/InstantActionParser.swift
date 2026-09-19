@@ -28,6 +28,16 @@ struct InstantActionParser {
     
     /// Exact keyword → rule table.
     private static let exactRules: [String: Rule] = [
+        // ZIP shorthand: qualifiers are deliberately left to the model.
+        "comprimi foto": Rule(tool: "file.zip", exts: MediaFormats.image, format: "archive.zip"),
+        "comprimi immagini": Rule(tool: "file.zip", exts: MediaFormats.image, format: "archive.zip"),
+        "comprimi le foto": Rule(tool: "file.zip", exts: MediaFormats.image, format: "archive.zip"),
+        "comprimi le immagini": Rule(tool: "file.zip", exts: MediaFormats.image, format: "archive.zip"),
+        "zip": Rule(tool: "file.zip", exts: nil, format: "archive.zip"),
+        "comprimi": Rule(tool: "file.zip", exts: nil, format: "archive.zip"),
+        "zip em up": Rule(tool: "file.zip", exts: nil, format: "archive.zip"),
+        "zip these": Rule(tool: "file.zip", exts: nil, format: "archive.zip"),
+        "comprimi i file": Rule(tool: "file.zip", exts: nil, format: "archive.zip"),
         // Audio extraction
         "mp3": Rule(tool: "video.extractAudio", exts: MediaFormats.video, format: "mp3"),
         "m4a": Rule(tool: "video.extractAudio", exts: MediaFormats.video, format: "m4a"),
@@ -94,24 +104,13 @@ struct InstantActionParser {
                              grayscale: rule.grayscale, minInputs: rule.minInputs, format: rule.format)
         }
         
-        // 3. ZIP archive shorthand (including photo/compress prefixes)
-        if isCompressRequest(trimmed) {
-            return makeGraph(tool: "file.zip", exts: nil, context: context, format: "archive.zip")
-        }
-        
         return nil
     }
     
-    private static func isCompressRequest(_ trimmed: String) -> Bool {
-        trimmed == "zip" || trimmed == "comprimi" || trimmed == "zip em up" || trimmed == "zip these"
-            || trimmed.hasPrefix("comprimi foto") || trimmed.hasPrefix("comprimi immagini")
-            || trimmed.hasPrefix("comprimi le foto") || trimmed.hasPrefix("comprimi le immagini")
-            || trimmed.hasPrefix("comprimi i file")
-    }
     
     private static func makeGraph(tool: String, exts: Set<String>?, context: FinderContext,
                                   grayscale: Bool = false, minInputs: Int = 1, format: String? = nil) -> ActionGraph? {
-        let inputFiles = resolveInputs(exts: exts, context: context)
+        let inputFiles = resolveInputs(exts: exts, context: context, selectVisible: tool == "file.select")
         guard inputFiles.count >= minInputs else { return nil }
         
         return ActionGraph(steps: [ActionStep(
@@ -123,9 +122,12 @@ struct InstantActionParser {
         )])
     }
     
-    private static func resolveInputs(exts: Set<String>?, context: FinderContext) -> [String] {
-        let selectedNames = context.selectedFiles.map { $0.lastPathComponent }
-        let candidates = selectedNames.isEmpty ? context.visibleFiles.map { $0.lastPathComponent } : selectedNames
+    private static func resolveInputs(exts: Set<String>?, context: FinderContext, selectVisible: Bool) -> [String] {
+        let urls = selectVisible || context.selectedFiles.isEmpty ? context.visibleFiles : context.selectedFiles
+        let candidates = urls.map { url in
+            url.deletingLastPathComponent().standardizedFileURL == context.currentDirectory?.standardizedFileURL
+                ? url.lastPathComponent : url.path
+        }
         
         guard let exts else { return candidates }
         return candidates.filter { name in

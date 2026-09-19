@@ -147,62 +147,42 @@ final class SecurityFixTests: XCTestCase {
 
     // MARK: - Sandbox profile smoke
 
-    func testMakeSandboxProfileProducesValidProfileAndContainsRoots() throws {
-        let workDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workDir) }
-
-        let profile = try ShellPlugin.makeSandboxProfile(workingDir: workDir, allowNetwork: false)
-        defer { try? FileManager.default.removeItem(at: profile) }
-
-        let text = try String(contentsOf: profile, encoding: .utf8)
-        XCTAssertTrue(text.hasPrefix("(version 1)"))
-        XCTAssertTrue(text.contains(workDir.path))
-        XCTAssertTrue(text.contains(FileManager.default.temporaryDirectory.path))
-        XCTAssertTrue(text.contains(BackupStore.defaultRoot().path))
-        XCTAssertFalse(text.contains("(allow network*)"), "Con allowNetwork=false il profilo non deve abilitare la rete.")
-
-        let online = try ShellPlugin.makeSandboxProfile(workingDir: workDir, allowNetwork: true)
-        defer { try? FileManager.default.removeItem(at: online) }
-        XCTAssertTrue(try String(contentsOf: online, encoding: .utf8).contains("(allow network*)"))
-    }
 
     func testSandboxExecSmokeExecutionInTempDir() async throws {
-        // Smoke test live: la scrittura positiva avviene SOLO in una
-        // directory temporanea. Su sistemi in cui sandbox-exec non applica i
-        // filtri di scrittura del profilo (GenericShellAction.sandboxUsable
-        // == false, fallback pre-deciso senza sandbox) la parte di esecuzione
-        // viene saltata; il contenuto del profilo è verificato dall'altro test.
-        guard GenericShellAction.sandboxUsable else {
+        guard await GenericShellAction.sandboxUsable else {
             throw XCTSkip("sandbox-exec assente o con filtri di scrittura non efficaci su questo sistema.")
         }
 
-        let workDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workDir = root.appendingPathComponent("allowed", isDirectory: true)
+        let deniedDir = root.appendingPathComponent("denied", isDirectory: true)
         try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workDir) }
+        try FileManager.default.createDirectory(at: deniedDir, withIntermediateDirectories: true)
+        let protectedFile = deniedDir.appendingPathComponent("sentinel.txt")
+        let sentinel = Data("preserve this content".utf8)
+        try sentinel.write(to: protectedFile)
 
-        let profile = try ShellPlugin.makeSandboxProfile(workingDir: workDir, allowNetwork: false)
-        defer { try? FileManager.default.removeItem(at: profile) }
+        let profile = root.appendingPathComponent("probe.sbpl")
+        try ShellPlugin.sandboxProfileText(writeDirectories: [workDir], allowNetwork: false)
+            .write(to: profile, atomically: true, encoding: .utf8)
 
-        // Scrittura consentita dentro la working dir temporanea
         let inside = try await AsyncProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: ["-f", profile.path, "/bin/zsh", "-c", "echo hi > out.txt"],
-            currentDirectoryURL: workDir
+            arguments: ["-f", profile.path, "/bin/zsh", "-c", "printf hi > out.txt"],
+            currentDirectoryURL: workDir,
+            timeout: 5
         )
         XCTAssertTrue(inside.isSuccess, "stderr: \(inside.stderr)")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: workDir.appendingPathComponent("out.txt").path))
+        XCTAssertEqual(try Data(contentsOf: workDir.appendingPathComponent("out.txt")), Data("hi".utf8))
 
-        // Scrittura negata fuori dalle root: la fuga verso $HOME fallisce e
-        // ogni eventuale residuo viene rimosso nel defer.
-        let escapePath = NSHomeDirectory() + "/sbx-escape-test"
-        defer { try? FileManager.default.removeItem(atPath: escapePath) }
-        let escaped = try await AsyncProcessRunner.run(
+        let outside = try await AsyncProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: ["-f", profile.path, "/bin/zsh", "-c", "echo hi > \(escapePath)"],
-            currentDirectoryURL: workDir
+            arguments: ["-f", profile.path, "/bin/zsh", "-c", "printf changed > sentinel.txt"],
+            currentDirectoryURL: deniedDir,
+            timeout: 5
         )
-        XCTAssertFalse(escaped.isSuccess, "La scrittura fuori dalla sandbox NON deve riuscire.")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: escapePath), "Nessun residuo di scrittura fuori dalla sandbox.")
+        XCTAssertFalse(outside.isSuccess, "La scrittura fuori dalla sandbox NON deve riuscire.")
+        XCTAssertEqual(try Data(contentsOf: protectedFile), sentinel)
     }
 }

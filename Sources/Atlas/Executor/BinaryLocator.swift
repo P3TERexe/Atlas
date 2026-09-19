@@ -11,7 +11,9 @@ enum BinaryLocator {
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",
-        "/bin"
+        "/bin",
+        "/usr/sbin",
+        "/sbin"
     ]
 
     /// Returns the first existing absolute path whose `lastPathComponent`
@@ -20,7 +22,7 @@ enum BinaryLocator {
     static func locate(_ name: String) -> String? {
         for directory in searchDirectories {
             let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: candidate.path) {
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
                 return candidate.path
             }
         }
