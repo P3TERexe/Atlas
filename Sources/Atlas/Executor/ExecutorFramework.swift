@@ -55,16 +55,27 @@ class ExecutorFramework {
         var transaction = AtlasTransaction(steps: graph.steps)
         transaction.query = query
         
+        var outputsByStep: [String: [URL]] = [:]
+        var runningContext = context
+
         // Gli step arrivano già ordinati topologicamente
         for (index, step) in graph.steps.enumerated() {
-            print("[Atlas][Executor] ▶ Step \(index + 1)/\(graph.steps.count): \(step.tool) format=\(step.format ?? "nil") inputs=\(step.inputs)")
-            guard let capability = ToolRegistry.shared.capability(for: step.tool) else {
+            var effectiveStep = step
+            if effectiveStep.inputs.isEmpty, let deps = effectiveStep.dependsOn, !deps.isEmpty {
+                let predecessorOutputs = deps.flatMap { outputsByStep[$0] ?? [] }
+                if !predecessorOutputs.isEmpty {
+                    effectiveStep.inputs = predecessorOutputs.map(\.path)
+                }
+            }
+
+            print("[Atlas][Executor] ▶ Step \(index + 1)/\(graph.steps.count): \(effectiveStep.tool) format=\(effectiveStep.format ?? "nil") inputs=\(effectiveStep.inputs)")
+            guard let capability = ToolRegistry.shared.capability(for: effectiveStep.tool) else {
                 transaction.status = .failed
                 transaction.completedAt = Date()
-                transaction.resultMessage = "Tool non trovato: \(step.tool)"
+                transaction.resultMessage = "Tool non trovato: \(effectiveStep.tool)"
                 HistoryStore.shared.record(transaction)
                 AtlasUndoManager.shared.register(transaction: transaction)
-                throw ExecutorError.toolNotFound(step.tool)
+                throw ExecutorError.toolNotFound(effectiveStep.tool)
             }
             
             let executor = capability.executor
@@ -74,13 +85,13 @@ class ExecutorFramework {
                 totalSteps: graph.steps.count,
                 itemIndex: 0,
                 totalItems: 1,
-                message: "Validazione dello step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                message: "Validazione dello step \(index + 1)/\(graph.steps.count): \(effectiveStep.tool)",
                 detail: "Verifica prerequisiti..."
             ))
             
             do {
                 // 1. Validation
-                try executor.validate(step: step, context: context)
+                try executor.validate(step: effectiveStep, context: runningContext)
             } catch {
                 transaction.status = .failed
                 transaction.completedAt = Date()
@@ -95,20 +106,21 @@ class ExecutorFramework {
                 totalSteps: graph.steps.count,
                 itemIndex: 0,
                 totalItems: 1,
-                message: "Esecuzione step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                message: "Esecuzione step \(index + 1)/\(graph.steps.count): \(effectiveStep.tool)",
                 detail: "Avvio operazioni..."
             ))
             
             // 2. Execution with sub-item real-time progress updates
+            let currentStep = effectiveStep
             let result: ActionResult
             do {
-                result = try await executor.execute(step: step, context: context) { itemIdx, totalItems, detailMsg in
+                result = try await executor.execute(step: currentStep, context: runningContext) { itemIdx, totalItems, detailMsg in
                     progressBridge.send(ProgressUpdate(
                         stepIndex: index,
                         totalSteps: graph.steps.count,
                         itemIndex: itemIdx,
                         totalItems: totalItems,
-                        message: "Step \(index + 1)/\(graph.steps.count): \(step.tool)",
+                        message: "Step \(index + 1)/\(graph.steps.count): \(currentStep.tool)",
                         detail: detailMsg
                     ))
                 }
@@ -130,6 +142,14 @@ class ExecutorFramework {
                 throw underlying
             }
             print("[Atlas][Executor] ✓ Step \(index + 1)/\(graph.steps.count) completato: \(result.outputFiles.count) file")
+            outputsByStep[step.id] = result.outputFiles
+            runningContext = FinderContext(
+                currentDirectory: runningContext.currentDirectory,
+                selectedFiles: runningContext.selectedFiles,
+                visibleFiles: runningContext.visibleFiles + result.outputFiles,
+                installedTools: runningContext.installedTools,
+                timestamp: Date()
+            )
             transaction.incorporate(result)
             
             if !result.success {

@@ -549,7 +549,7 @@ struct NvidiaModelProvider: ModelProvider {
             "model": model,
             "messages": messages,
             "temperature": 0.0,
-            "max_tokens": isComplex ? 3500 : 1200
+            "max_tokens": isComplex ? 2048 : 1200
         ]
         if !isComplex {
             body["thinking"] = ["type": "disabled"]

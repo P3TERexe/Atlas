@@ -433,4 +433,41 @@ final class FilePluginTests: XCTestCase {
 
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "contenuto")
     }
+
+    // MARK: - Make Directory & Move Files
+
+    func testMakeDirectoryCreatesFolder() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let step = ActionStep(id: "m1", tool: "file.mkdir", format: "nuova_cartella")
+        let result = try await MakeDirectoryAction().execute(step: step, context: context(in: dir))
+
+        XCTAssertTrue(result.success)
+        let created = dir.appendingPathComponent("nuova_cartella")
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: created.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue)
+    }
+
+    func testMoveFilesMovesIntoFolder() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let file1 = try makeFile(in: dir, named: "doc1.txt", content: "hello")
+        let file2 = try makeFile(in: dir, named: "doc2.txt", content: "world")
+
+        let step = ActionStep(id: "mv1", tool: "file.move", inputs: ["doc1.txt", "doc2.txt"], format: "destinazione")
+        let result = try await MoveFilesAction().execute(step: step, context: context(in: dir, files: [file1, file2]))
+
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(result.outputFiles.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file1.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file2.path))
+
+        let target1 = dir.appendingPathComponent("destinazione").appendingPathComponent("doc1.txt")
+        let target2 = dir.appendingPathComponent("destinazione").appendingPathComponent("doc2.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target1.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target2.path))
+    }
 }

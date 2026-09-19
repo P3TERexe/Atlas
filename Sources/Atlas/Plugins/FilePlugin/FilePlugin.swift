@@ -50,6 +50,20 @@ class FilePlugin: AtlasPlugin {
                 outputFormats: [],
                 executor: CopyFilesAction()
             ),
+            ToolCapability(
+                id: "file.mkdir",
+                description: "Creates a new folder or directory in the current location. Set 'format' to the folder name (e.g. 'caccona galattica' or 'Progetti').",
+                inputFormats: [],
+                outputFormats: [],
+                executor: MakeDirectoryAction()
+            ),
+            ToolCapability(
+                id: "file.move",
+                description: "Moves files into a destination folder. Set 'format' to the destination folder name (e.g. 'caccona galattica') and 'inputs' to files (or empty for predecessor/matching files).",
+                inputFormats: [],
+                outputFormats: [],
+                executor: MoveFilesAction()
+            ),
         ]
     }
 }
@@ -640,6 +654,91 @@ final class TrashFilesAction: ActionExecutor {    func validate(step: ActionStep
         } catch {
             throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: outputs, message: nil, backupURLs: backupURLs))
         }
+    }
+}
+
+// MARK: - Make Directory Action
+
+final class MakeDirectoryAction: ActionExecutor {
+    func validate(step: ActionStep, context: FinderContext) throws {
+        guard let folderName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty else {
+            throw ExecutorError.validationFailed("Specifica il nome della cartella da creare nel campo 'format'.")
+        }
+        guard !folderName.contains("/") else {
+            throw ExecutorError.validationFailed("Il nome della cartella non può contenere barre '/'.")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        guard let currentDirectory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        guard let folderName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty else {
+            throw ExecutorError.validationFailed("Nome cartella mancante.")
+        }
+        let targetFolder = currentDirectory.appendingPathComponent(folderName, isDirectory: true)
+        var created = false
+        if !FileManager.default.fileExists(atPath: targetFolder.path) {
+            try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+            created = true
+        }
+        return ActionResult(
+            success: true,
+            outputFiles: [targetFolder],
+            message: created ? "Creata cartella '\(folderName)'" : "Cartella '\(folderName)' già esistente",
+            undoSupported: created
+        )
+    }
+}
+
+// MARK: - Move Files Action
+
+final class MoveFilesAction: ActionExecutor {
+    func validate(step: ActionStep, context: FinderContext) throws {
+        guard let folderName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty else {
+            throw ExecutorError.validationFailed("Specifica il nome della cartella di destinazione nel campo 'format'.")
+        }
+    }
+    
+    func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
+        guard let currentDirectory = context.currentDirectory else {
+            throw ExecutorError.executionFailed("Cartella corrente non disponibile.")
+        }
+        guard let folderName = step.format?.trimmingCharacters(in: .whitespacesAndNewlines), !folderName.isEmpty else {
+            throw ExecutorError.validationFailed("Nome cartella di destinazione mancante.")
+        }
+        let targetFolder = currentDirectory.appendingPathComponent(folderName, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: targetFolder.path) {
+            try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        }
+        
+        let files = try InputResolver.resolve(step: step, context: context, allowDirectories: true)
+        var movedFiles: [URL] = []
+        var backupURLs: [URL: URL] = [:]
+        
+        for (index, file) in files.enumerated() {
+            try Task.checkCancellation()
+            progress?(index + 1, files.count, "Spostamento \(index + 1)/\(files.count): \(file.lastPathComponent)")
+            if file.path == targetFolder.path { continue }
+            if file.deletingLastPathComponent().path == targetFolder.path { continue }
+            
+            let uniqueDestination = FileResolver.uniqueURL(
+                in: targetFolder,
+                baseName: file.deletingPathExtension().lastPathComponent,
+                extensionName: file.pathExtension
+            )
+            
+            try FileManager.default.moveItem(at: file, to: uniqueDestination)
+            movedFiles.append(uniqueDestination)
+            backupURLs[uniqueDestination] = file
+        }
+        
+        return ActionResult(
+            success: true,
+            outputFiles: movedFiles,
+            message: "Spostati \(movedFiles.count) elementi nella cartella '\(folderName)'",
+            backupURLs: backupURLs
+        )
     }
 }
 

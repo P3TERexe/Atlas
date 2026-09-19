@@ -144,6 +144,11 @@ struct ActionStep: Codable, Sendable {
     /// Declared extension-conversion output; other tools do not declare a filename here.
     /// Returning the input unchanged means no distinct output can be predicted.
     func outputName(for input: String) -> String {
+        if tool == "image.convert" && grayscale == true {
+            let base = (input as NSString).deletingPathExtension
+            let ext = format ?? (input as NSString).pathExtension
+            return base + "_bw." + ext
+        }
         guard ["image.convert", "video.convert", "video.extractAudio"].contains(tool),
               let format, !format.isEmpty, !format.contains("/"), !format.contains(".") else { return input }
         return (input as NSString).deletingPathExtension + "." + format

@@ -55,15 +55,16 @@ class PromptBuilder {
           ]
         }
         
-        CRITICAL RULES FOR FILE SELECTION:
-        1. Use exactly the files requested. Explicit names narrow the selection; never add other selected or visible files. For an unqualified selected-file operation, include every matching selected filename.
-        2. If no files are selected, use the complete Visible Files array. A request to select all matching files uses visible candidates even if a partial selection exists. Never silently truncate a batch.
-        3. For multi-step operations, use "dependsOn" to reference the step IDs that must complete first.
-        4. If the user request is to SELECT or HIGHLIGHT files (e.g. "seleziona le immagini"), use ONLY 'file.select'. DO NOT convert, rename, or modify the files!
-        5. If the user asks to COMPRESS photos or images (e.g. "comprimi foto", "comprimi le immagini"), use ONLY 'file.zip' to create a ZIP archive. DO NOT perform lossy image conversions or resizing unless explicitly asked for quality reduction or format change!
-        6. Use 'shell.run' only for requests allowed by the local shell safety policy; commands are confined and may be rejected. Never use shell to bypass a dedicated tool or safety restriction.
-        7. If the user asks to make N copies of files ("7 copie", "10 volte", "N copies") into a folder, use ONLY tool 'file.copy' with 'format' set to the copy count (e.g. "7" for folder 'copie', or "7;backup" for folder 'backup'). NEVER use shell.run loops (for/seq/cp) to create copies!
-        8. For multi-step requests (e.g. convert AND make N copies), output a sequence of steps and reference the first step's outputs in the second step's 'inputs', with 'dependsOn' on the first step's id.
+        CRITICAL RULES FOR FILE SELECTION & EFFICIENCY:
+        1. When operating on all files of a type in the current folder (e.g. "tutte le foto", "tutte le immagini", "all files", "converti le foto in bianco e nero"), ALWAYS set 'inputs': [] (empty array)! The execution engine automatically resolves all matching files in the directory. DO NOT manually enumerate every filename in 'inputs' when the user says "tutte", "all", or when no specific filenames were given.
+        2. Only specify individual filenames in 'inputs' if the user explicitly named specific files (e.g. "foto1.jpg e foto2.png").
+        3. To create a new folder/directory, use tool 'file.mkdir' with 'format' set to the folder name (e.g. "caccona galattica").
+        4. To move files into a folder, use tool 'file.move' with 'format' set to the destination folder name and 'dependsOn' referencing previous steps (e.g. conversion step).
+        5. Set 'grayscale': true for Black & White / Grayscale image conversion.
+        6. For multi-step operations, use "dependsOn" to reference the step IDs that must complete first.
+        7. If the user request is to SELECT or HIGHLIGHT files (e.g. "seleziona le immagini"), use ONLY 'file.select'. DO NOT convert, rename, or modify the files!
+        8. If the user asks to COMPRESS photos or images (e.g. "comprimi foto", "comprimi le immagini"), use ONLY 'file.zip' to create a ZIP archive. DO NOT perform lossy image conversions or resizing unless explicitly asked for quality reduction or format change!
+        9. NEVER use shell.run for creating directories (use 'file.mkdir') or copying/moving files (use 'file.copy' or 'file.move').
         """
         
         return prompt
@@ -93,23 +94,23 @@ class PromptBuilder {
         "\(query)"
         
         RULES:
-        1. Use exactly the requested files; explicit names narrow selection. Otherwise include all matching selected files, or all matching visible files if no selection. Select-all uses visible files, not the current partial selection. Never truncate.
-        2. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.).
-        3. Set 'grayscale': true for Black & White.
-        4. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
-        5. For exact "comprimi foto/immagini" requests use 'file.zip'; quality, resizing or format qualifiers require the requested image operation instead.
-        6. Use 'shell.run' only within the local shell safety policy; confined commands may be rejected. Never bypass a dedicated tool or safety restriction.
-        7. For multi-step requests (e.g. convert AND make N copies in a new folder), output a sequence of steps with 'dependsOn'.
-        8. For "N copie in una cartella" (N copies of files in a folder), use tool 'file.copy' with 'format' = copy count, e.g. "7" (folder 'copie') or "7;backup" (folder 'backup'). NEVER use shell loops for copies!
+        1. For batch requests on all matching files (e.g. "tutte le foto", "tutti i file", "all images"), use 'inputs': [] (empty array)! The engine will automatically match files. Only write specific filenames if explicitly requested by name.
+        2. To create a directory, use 'file.mkdir' with 'format' = directory name.
+        3. To move files into a directory, use 'file.move' with 'format' = directory name and 'dependsOn' for predecessor steps.
+        4. Set 'format' for target extension (jpg, webp, pdf, mp3, zip, etc.).
+        5. Set 'grayscale': true for Black & White.
+        6. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
+        7. For exact "comprimi foto/immagini" requests use 'file.zip'; quality, resizing or format qualifiers require the requested image operation instead.
+        8. For multi-step requests, output a sequence of steps with 'dependsOn'.
         """
     }
 
     private func candidateList(_ urls: [URL], context: FinderContext) -> String {
-        let names = urls.map { url in
+        let limited = urls.prefix(40)
+        let names = limited.map { url in
             url.deletingLastPathComponent().standardizedFileURL == context.currentDirectory?.standardizedFileURL
                 ? url.lastPathComponent : url.path
         }
-        // An array of Strings is always JSON-encodable, including quotes/newlines in names.
         let data = try! JSONEncoder().encode(names)
         return String(decoding: data, as: UTF8.self)
     }

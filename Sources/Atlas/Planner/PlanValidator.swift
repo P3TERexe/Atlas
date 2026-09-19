@@ -70,11 +70,18 @@ struct PlanValidator {
                 continue
             }
             let extensions: Set<String>? = capability.inputFormats.isEmpty || capability.inputFormats.contains("*") ? nil : Set(capability.inputFormats)
-            let allowDirectories = ["file.zip", "file.compress", "file.select", "file.trash"].contains(step.tool)
+            let allowDirectories = ["file.zip", "file.compress", "file.select", "file.trash", "file.move"].contains(step.tool)
             var inputs: [URL] = []
             var hasFutureInput = false
             if step.inputs.isEmpty {
-                inputs = try InputResolver.resolve(step: step, context: context, extensions: extensions, allowDirectories: allowDirectories)
+                if step.tool == "file.mkdir" {
+                    // file.mkdir does not require inputs
+                } else if step.dependsOn != nil && !step.dependsOn!.isEmpty {
+                    // Depends on predecessor step outputs
+                    hasFutureInput = true
+                } else {
+                    inputs = try InputResolver.resolve(step: step, context: context, extensions: extensions, allowDirectories: allowDirectories)
+                }
             } else {
                 for input in step.inputs {
                     let url = try inputURL(input, context: context)
@@ -99,6 +106,9 @@ struct PlanValidator {
                 throw PlanValidationError.intentMismatch("Formato non supportato da '\(step.tool)': \(format)")
             }
             var declared = predecessors
+            if step.tool == "file.mkdir", let folderName = step.format, let dir = context.currentDirectory {
+                declared.insert(dir.appendingPathComponent(folderName).standardizedFileURL)
+            }
             for input in inputs {
                 let output = step.outputName(for: input.path)
                 if output != input.path {
