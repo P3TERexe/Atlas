@@ -64,13 +64,13 @@ struct PreviewView: View {
                             .font(.caption2)
                         Text("Esegui")
                             .font(.body.weight(.bold))
-                        Text("⌘↩")
+                        Text("↩")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .opacity(0.8)
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: [.command])
+                .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 2)
         }

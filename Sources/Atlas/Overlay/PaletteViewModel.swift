@@ -108,7 +108,7 @@ final class PaletteViewModel: ObservableObject {
         let id = UUID()
         currentTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.currentTask = nil; self.pendingOperation = nil }
+            defer { self.currentTask = nil }
             print("[Atlas][UI] ▶ planning start query=\"\(query)\"")
             let context: FinderContext
             do {
@@ -216,19 +216,22 @@ final class PaletteViewModel: ObservableObject {
     /// Confirmation path: executes the frozen pending snapshot and validates
     /// that explicit inputs still exist, without picking different homonyms.
     func confirmPendingOperation() {
-        guard let pending = pendingOperation else { return }
-        for step in pending.graph.steps where !step.inputs.isEmpty {
-            for input in step.inputs {
-                let candidates = [input.hasPrefix("/") ? URL(fileURLWithPath: input) : pending.context.currentDirectory?.appendingPathComponent(input)]
-                if let url = candidates.compactMap({ $0 }).first,
-                   !FileManager.default.fileExists(atPath: url.path) {
-                    executionMessage = "❌ L'input '\(input)' non esiste più; ricrea il piano."
-                    isExecuting = false
-                    return
+        if let pending = pendingOperation {
+            for step in pending.graph.steps where !step.inputs.isEmpty {
+                for input in step.inputs {
+                    let candidates = [input.hasPrefix("/") ? URL(fileURLWithPath: input) : pending.context.currentDirectory?.appendingPathComponent(input)]
+                    if let url = candidates.compactMap({ $0 }).first,
+                       !FileManager.default.fileExists(atPath: url.path) {
+                        executionMessage = "❌ L'input '\(input)' non esiste più; ricrea il piano."
+                        isExecuting = false
+                        return
+                    }
                 }
             }
+            run(pending: pending)
+        } else if let graph = plannedGraph {
+            executeGraph(graph)
         }
-        run(pending: pending)
     }
 
     private func run(pending: PendingOperation?) {

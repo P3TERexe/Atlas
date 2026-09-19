@@ -41,6 +41,17 @@ struct PaletteInputBar: View {
                     return .handled
                 }
 
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isExecuting {
+                Button(action: onExecute) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help("Invia comando (Invio / Return)")
+                .transition(.opacity.combined(with: .scale(scale: 0.85)))
+            }
+
             if isExecuting {
                 // Cancel button — visible only during planning/execution
                 Button(action: onCancel) {
