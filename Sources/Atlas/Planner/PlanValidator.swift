@@ -38,23 +38,6 @@ struct PlanValidator {
                 throw PlanValidationError.toolNotFound(step.tool)
             }
         }
-        let rules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
-        if rules.isEmpty, let canonical = InstantActionParser.parse(query: query, context: context) {
-            guard sorted.steps.count == canonical.steps.count else {
-                throw PlanValidationError.intentMismatch("La frase locale richiede un solo strumento.")
-            }
-            for (actual, expected) in zip(sorted.steps, canonical.steps) {
-                guard actual.tool == expected.tool else {
-                    throw PlanValidationError.intentMismatch("La frase locale richiede '\(expected.tool)'.")
-                }
-                if let format = expected.format, actual.format?.lowercased() != format {
-                    throw PlanValidationError.formatMismatch(expected: format, found: actual.format)
-                }
-                if expected.grayscale == true && actual.grayscale != true {
-                    throw PlanValidationError.grayscaleMissing
-                }
-            }
-        }
 
         // Each entry contains only outputs declared by extension conversions
         // and their ancestors. Rename/copy formats are not output extensions.

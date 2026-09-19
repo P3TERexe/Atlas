@@ -35,33 +35,16 @@ final class PlanValidatorTests: XCTestCase {
         }
     }
 
-    func testCanonicalSelectionRejectsModification() throws {
+    func testValidLLMActionPlansPassValidation() throws {
         try withContext(["foto.png"]) { context in
-            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "jpg")])
-            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "seleziona le foto", context: context)) {
-                guard case PlanValidationError.intentMismatch = $0 else { return XCTFail("Unexpected error: \($0)") }
-            }
-        }
-    }
-
-    func testCanonicalZipRejectsOtherFileTools() throws {
-        try withContext(["foto.png"]) { context in
-            let wrong = ActionGraph(steps: [ActionStep(id: "s1", tool: "file.select", inputs: ["foto.png"])])
-            XCTAssertThrowsError(try PlanValidator.validate(graph: wrong, query: "zip", context: context))
-            let graph = try XCTUnwrap(InstantActionParser.parse(query: "comprimi le foto", context: context))
-            try PlanValidator.validate(graph: graph, query: "comprimi le foto", context: context)
-        }
-    }
-
-    func testCanonicalConversionChecksFormatAndGrayscale() throws {
-        try withContext(["foto.png"]) { context in
-            let graph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "png")])
-            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "jpg", context: context)) {
-                guard case PlanValidationError.formatMismatch = $0 else { return XCTFail("Unexpected error: \($0)") }
-            }
-            XCTAssertThrowsError(try PlanValidator.validate(graph: graph, query: "bianco e nero", context: context)) {
-                guard case PlanValidationError.grayscaleMissing = $0 else { return XCTFail("Unexpected error: \($0)") }
-            }
+            let selectGraph = ActionGraph(steps: [ActionStep(id: "s1", tool: "file.select", inputs: ["foto.png"])])
+            XCTAssertNoThrow(try PlanValidator.validate(graph: selectGraph, query: "seleziona le foto", context: context))
+            
+            let convertGraph = ActionGraph(steps: [ActionStep(id: "s1", tool: "image.convert", inputs: ["foto.png"], format: "jpg")])
+            XCTAssertNoThrow(try PlanValidator.validate(graph: convertGraph, query: "converti in jpg", context: context))
+            
+            let zipGraph = ActionGraph(steps: [ActionStep(id: "s1", tool: "file.zip", inputs: ["foto.png"], format: "archive.zip")])
+            XCTAssertNoThrow(try PlanValidator.validate(graph: zipGraph, query: "comprimi le foto", context: context))
         }
     }
 

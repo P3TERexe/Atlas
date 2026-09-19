@@ -43,14 +43,23 @@ class PromptBuilder {
           "steps": [
             {
               "id": "step_1",
-              "tool": "file.select",
-              "inputs": ["photo1.png", "photo2.png"]
+              "tool": "file.mkdir",
+              "inputs": [],
+              "format": "Cartella"
             },
             {
               "id": "step_2",
               "tool": "image.convert",
-              "inputs": ["photo1.png", "photo2.png"],
-              "format": "jpg"
+              "inputs": [],
+              "grayscale": true,
+              "dependsOn": ["step_1"]
+            },
+            {
+              "id": "step_3",
+              "tool": "file.move",
+              "inputs": [],
+              "format": "Cartella",
+              "dependsOn": ["step_2"]
             }
           ]
         }
@@ -102,6 +111,8 @@ class PromptBuilder {
         6. For SELECT/HIGHLIGHT requests (e.g. "seleziona file X"), use ONLY 'file.select' without converting or modifying files!
         7. For exact "comprimi foto/immagini" requests use 'file.zip'; quality, resizing or format qualifiers require the requested image operation instead.
         8. For multi-step requests, output a sequence of steps with 'dependsOn'.
+        
+        Output ONLY a JSON object: {"steps": [{"id": "step_1", "tool": "...", "inputs": []}]}
         """
     }
 

@@ -144,7 +144,11 @@ final class AppSettings: ObservableObject {
         self.openCodeApiKey = KeychainStore.load(key: "opencode_api_key") ?? ""
         self.customApiKey = KeychainStore.load(key: "custom_api_key") ?? ""
         let rawNvidia = defaults.string(forKey: "nvidia_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        self.nvidiaModel = rawNvidia.isEmpty ? "meta/llama-3.3-70b-instruct" : rawNvidia
+        if rawNvidia.isEmpty || rawNvidia == "meta/llama-3.3-70b-instruct" || rawNvidia == "nvidia/nemotron-3-ultra-550b-a55b" {
+            self.nvidiaModel = "meta/llama-3.2-11b-vision-instruct"
+        } else {
+            self.nvidiaModel = rawNvidia
+        }
         self.openCodeModel = defaults.string(forKey: "opencode_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "deepseek-v4-flash-free"
         self.ollamaEndpoint = defaults.string(forKey: "ollama_endpoint")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "http://localhost:11434/api/generate"
         self.ollamaModel = defaults.string(forKey: "ollama_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "llama3"
