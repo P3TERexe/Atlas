@@ -137,7 +137,15 @@ enum PlanResponseParser {
                 guard let function = call["function"] as? [String: Any],
                       function["name"] as? String == PlanToolSchema.functionName,
                       let arguments = function["arguments"] as? String else { continue }
-                return try decodeGraph(arguments, source: "tool arguments")
+                do {
+                    return try decodeGraph(arguments, source: "tool arguments")
+                } catch {
+                    if let content = message["content"] as? String,
+                       let fallback = try? ActionGraphParser.parse(content) {
+                        return fallback
+                    }
+                    throw error
+                }
             }
         }
 
@@ -173,16 +181,74 @@ enum PlanResponseParser {
         return try ActionGraphParser.parse(text)
     }
 
-
     private static func decodeGraph(_ json: String, source: String) throws -> ActionGraph {
-        guard let data = json.data(using: .utf8) else {
-            throw PlannerError.decodingFailed("\(source) non validi come UTF-8")
+        var cleaned = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("<|python_tag|>") {
+            cleaned = String(cleaned.dropFirst("<|python_tag|>".count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        do {
-            return try JSONDecoder().decode(ActionGraph.self, from: data)
-        } catch {
-            throw PlannerError.decodingFailed("\(source) non decodificabili come ActionGraph: \(error.localizedDescription)")
+        
+        // 1. Direct decoding if valid ActionGraph JSON
+        if let data = cleaned.data(using: .utf8),
+           let direct = try? JSONDecoder().decode(ActionGraph.self, from: data) {
+            return direct
         }
+        
+        // 2. Lenient parser (strips fences, thinking tags, outermost JSON balances)
+        if let parsed = try? ActionGraphParser.parse(cleaned) {
+            return parsed
+        }
+        
+        // 3. Unwrap wrapped tool calling structures (e.g. {"name": "submit_plan", "parameters": ...})
+        if let data = cleaned.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var target = obj
+            if let params = obj["parameters"] as? [String: Any] {
+                target = params
+            } else if let paramsStr = obj["parameters"] as? String,
+                      let pData = paramsStr.data(using: .utf8),
+                      let pObj = try? JSONSerialization.jsonObject(with: pData) as? [String: Any] {
+                target = pObj
+            }
+            
+            // If "steps" is a string-encoded JSON array:
+            if let stepsStr = target["steps"] as? String,
+               let sData = stepsStr.data(using: .utf8),
+               let sArray = try? JSONSerialization.jsonObject(with: sData) as? [[String: Any]] {
+                target["steps"] = sArray
+            }
+            
+            if var steps = target["steps"] as? [[String: Any]] {
+                var seenIds = Set<String>()
+                for i in steps.indices {
+                    var s = steps[i]
+                    if s["inputs"] == nil {
+                        s["inputs"] = [String]()
+                    }
+                    var stepId = (s["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if stepId.isEmpty || seenIds.contains(stepId) {
+                        stepId = "step_\(i + 1)"
+                    }
+                    seenIds.insert(stepId)
+                    s["id"] = stepId
+                    
+                    if s["tool"] as? String == "file.mkdir" && s["format"] == nil {
+                        if let rawId = steps[i]["id"] as? String, !rawId.hasPrefix("step") {
+                            s["format"] = rawId
+                        }
+                    }
+                    steps[i] = s
+                }
+                target["steps"] = steps
+            }
+            
+            if let reencoded = try? JSONSerialization.data(withJSONObject: target),
+               let reDecoded = try? JSONDecoder().decode(ActionGraph.self, from: reencoded) {
+                return reDecoded
+            }
+        }
+        
+        // 4. Fall back to ActionGraphParser with detailed error reporting
+        return try ActionGraphParser.parse(cleaned)
     }
 }
 

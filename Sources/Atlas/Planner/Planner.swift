@@ -97,7 +97,7 @@ class Planner {
         case .claude:
             ClaudeModelProvider(apiKey: settings.claudeApiKey, toolIds: toolIds)
         case .nvidia:
-            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: toolIds, disableThinking: settings.disableThinking)
+            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: [], disableThinking: settings.disableThinking)
         case .openaiCompatible:
             OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds, disableThinking: settings.disableThinking)
         }
