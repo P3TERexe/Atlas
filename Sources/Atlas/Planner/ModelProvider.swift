@@ -191,27 +191,31 @@ enum PlanResponseParser {
 struct AppleModelProvider: ModelProvider {
     
     func plan(prompt: String, isComplex: Bool) async throws -> ActionGraph {
-        let model = SystemLanguageModel.default
-        
-        guard model.isAvailable else {
-            throw PlannerError.llmError("Apple Intelligence non è disponibile su questo dispositivo.")
+        if #available(macOS 26.0, *) {
+            let model = SystemLanguageModel.default
+            
+            guard model.isAvailable else {
+                throw PlannerError.llmError("Apple Intelligence non è disponibile su questo dispositivo.")
+            }
+            
+            let instructions = """
+            You are Atlas, a macOS file automation assistant. Translate user requests into structured ActionGraph steps.
+            
+            RULES FOR FIELDS:
+            - tool: Must be an exact tool ID from AVAILABLE TOOLS (image.convert, file.rename, file.select, file.zip, file.compress, pdf.merge, pdf.split, pdf.compress, video.extractAudio, video.convert).
+            - FOR SELECT/HIGHLIGHT REQUESTS (e.g. "seleziona le immagini", "seleziona foto.png"): Use ONLY 'file.select'. DO NOT convert, rename, or modify files!
+            - inputs: Array of exact filenames to process. If files are selected in CONTEXT, list ALL selected filenames in 'inputs'.
+            - format: Output extension or template (e.g. "jpg", "webp", "png", "pdf", "mp3", "m4a", "zip", "foto_#.jpg"). Always set format when converting, zipping, or renaming.
+            - grayscale: Set to true ONLY if user explicitly asks for Black & White, grayscale, or grigio.
+            - dependsOn: Array of step IDs that must complete first (nil if no dependencies).
+            """
+            
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(to: prompt, generating: ActionGraph.self)
+            return response.content
+        } else {
+            throw PlannerError.llmError("Apple Intelligence richiede macOS 26 o superiore. Configura Ollama o un altro provider nelle impostazioni.")
         }
-        
-        let instructions = """
-        You are Atlas, a macOS file automation assistant. Translate user requests into structured ActionGraph steps.
-        
-        RULES FOR FIELDS:
-        - tool: Must be an exact tool ID from AVAILABLE TOOLS (image.convert, file.rename, file.select, file.zip, file.compress, pdf.merge, pdf.split, pdf.compress, video.extractAudio, video.convert).
-        - FOR SELECT/HIGHLIGHT REQUESTS (e.g. "seleziona le immagini", "seleziona foto.png"): Use ONLY 'file.select'. DO NOT convert, rename, or modify files!
-        - inputs: Array of exact filenames to process. If files are selected in CONTEXT, list ALL selected filenames in 'inputs'.
-        - format: Output extension or template (e.g. "jpg", "webp", "png", "pdf", "mp3", "m4a", "zip", "foto_#.jpg"). Always set format when converting, zipping, or renaming.
-        - grayscale: Set to true ONLY if user explicitly asks for Black & White, grayscale, or grigio.
-        - dependsOn: Array of step IDs that must complete first (nil if no dependencies).
-        """
-        
-        let session = LanguageModelSession(instructions: instructions)
-        let response = try await session.respond(to: prompt, generating: ActionGraph.self)
-        return response.content
     }
 }
 
@@ -246,7 +250,7 @@ struct OllamaModelProvider: ModelProvider {
             "options": [
                 "temperature": 0.0,
                 "num_predict": isComplex ? 3500 : 1200
-            ]
+            ] as [String: Any]
         ]
         if disableThinking {
             body["think"] = false

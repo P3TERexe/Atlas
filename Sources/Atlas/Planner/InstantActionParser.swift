@@ -124,9 +124,15 @@ struct InstantActionParser {
     
     private static func resolveInputs(exts: Set<String>?, context: FinderContext, selectVisible: Bool) -> [String] {
         let urls = selectVisible || context.selectedFiles.isEmpty ? context.visibleFiles : context.selectedFiles
-        let candidates = urls.map { url in
-            url.deletingLastPathComponent().standardizedFileURL == context.currentDirectory?.standardizedFileURL
-                ? url.lastPathComponent : url.path
+        let currentDirPath = context.currentDirectory?.standardized.path
+        let currentDirResolved = context.currentDirectory?.resolvingSymlinksInPath().standardized.path
+        let candidates = urls.map { url -> String in
+            let parentPath = url.deletingLastPathComponent().standardized.path
+            let parentResolved = url.deletingLastPathComponent().resolvingSymlinksInPath().standardized.path
+            if let currentDirPath, parentPath == currentDirPath || parentResolved == currentDirResolved {
+                return url.lastPathComponent
+            }
+            return url.path
         }
         
         guard let exts else { return candidates }

@@ -1,7 +1,7 @@
 import Foundation
 import FoundationModels
 
-struct ActionGraph: Codable, Sendable, Generable {
+struct ActionGraph: Codable, Sendable {
     var steps: [ActionStep]
 
     init(steps: [ActionStep]) {
@@ -32,23 +32,7 @@ struct ActionGraph: Codable, Sendable, Generable {
         try container.encode(steps, forKey: .steps)
     }
 
-    static var generationSchema: GenerationSchema {
-        GenerationSchema(
-            type: ActionGraph.self,
-            description: "Action plan for filesystem operations",
-            properties: [
-                .init(name: "steps", description: "Ordered list of actions to execute on the filesystem", type: [ActionStep].self)
-            ]
-        )
-    }
 
-    init(_ content: GeneratedContent) throws {
-        self.steps = try content.value([ActionStep].self, forProperty: "steps")
-    }
-
-    var generatedContent: GeneratedContent {
-        GeneratedContent(properties: ["steps": steps])
-    }
     
     /// Topologically sorts the steps by their `dependsOn` constraints
     /// (Kahn's algorithm). Throws on unknown dependencies or cycles.
@@ -109,7 +93,7 @@ struct ActionGraph: Codable, Sendable, Generable {
     }
 }
 
-struct ActionStep: Codable, Sendable, Generable {
+struct ActionStep: Codable, Sendable {
     var id: String
     var tool: String
     var inputs: [String]
@@ -118,43 +102,7 @@ struct ActionStep: Codable, Sendable, Generable {
     var quality: Int?
     var dependsOn: [String]?
 
-    static var generationSchema: GenerationSchema {
-        GenerationSchema(
-            type: ActionStep.self,
-            description: "A single action to execute",
-            properties: [
-                .init(name: "id", description: "Unique step identifier, e.g. step_1", type: String.self),
-                .init(name: "tool", description: "Tool ID to use, e.g. image.convert, file.rename, file.compress", type: String.self),
-                .init(name: "inputs", description: "Input filenames relative to the current directory", type: [String].self),
-                .init(name: "format", description: "Output format, e.g. webp, jpg, png. Nil if not applicable.", type: String?.self),
-                .init(name: "grayscale", description: "Set to true to convert the image to black & white / grayscale.", type: Bool?.self),
-                .init(name: "quality", description: "Output quality from 1 to 100. Nil for default.", type: Int?.self),
-                .init(name: "dependsOn", description: "Step IDs this step depends on. Nil if no dependencies.", type: [String]?.self)
-            ]
-        )
-    }
 
-    init(_ content: GeneratedContent) throws {
-        self.id = try content.value(String.self, forProperty: "id")
-        self.tool = try content.value(String.self, forProperty: "tool")
-        self.inputs = try content.value([String].self, forProperty: "inputs")
-        self.format = try content.value(String?.self, forProperty: "format")
-        self.grayscale = try content.value(Bool?.self, forProperty: "grayscale")
-        self.quality = try content.value(Int?.self, forProperty: "quality")
-        self.dependsOn = try content.value([String]?.self, forProperty: "dependsOn")
-    }
-
-    var generatedContent: GeneratedContent {
-        GeneratedContent(properties: [
-            "id": id,
-            "tool": tool,
-            "inputs": inputs,
-            "format": format,
-            "grayscale": grayscale,
-            "quality": quality,
-            "dependsOn": dependsOn
-        ])
-    }
 
     enum CodingKeys: String, CodingKey {
         case id, tool, inputs, format, grayscale, quality, dependsOn
@@ -199,5 +147,69 @@ struct ActionStep: Codable, Sendable, Generable {
         guard ["image.convert", "video.convert", "video.extractAudio"].contains(tool),
               let format, !format.isEmpty, !format.contains("/"), !format.contains(".") else { return input }
         return (input as NSString).deletingPathExtension + "." + format
+    }
+}
+
+// MARK: - Generable Conformance (macOS 26.0+)
+
+@available(macOS 26.0, *)
+extension ActionGraph: Generable {
+    static var generationSchema: GenerationSchema {
+        GenerationSchema(
+            type: ActionGraph.self,
+            description: "Action plan for filesystem operations",
+            properties: [
+                .init(name: "steps", description: "Ordered list of actions to execute on the filesystem", type: [ActionStep].self)
+            ]
+        )
+    }
+
+    init(_ content: GeneratedContent) throws {
+        self.steps = try content.value([ActionStep].self, forProperty: "steps")
+    }
+
+    var generatedContent: GeneratedContent {
+        GeneratedContent(properties: ["steps": steps])
+    }
+}
+
+@available(macOS 26.0, *)
+extension ActionStep: Generable {
+    static var generationSchema: GenerationSchema {
+        GenerationSchema(
+            type: ActionStep.self,
+            description: "A single action to execute",
+            properties: [
+                .init(name: "id", description: "Unique step identifier, e.g. step_1", type: String.self),
+                .init(name: "tool", description: "Tool ID to use, e.g. image.convert, file.rename, file.compress", type: String.self),
+                .init(name: "inputs", description: "Input filenames relative to the current directory", type: [String].self),
+                .init(name: "format", description: "Output format, e.g. webp, jpg, png. Nil if not applicable.", type: String?.self),
+                .init(name: "grayscale", description: "Set to true to convert the image to black & white / grayscale.", type: Bool?.self),
+                .init(name: "quality", description: "Output quality from 1 to 100. Nil for default.", type: Int?.self),
+                .init(name: "dependsOn", description: "Step IDs this step depends on. Nil if no dependencies.", type: [String]?.self)
+            ]
+        )
+    }
+
+    init(_ content: GeneratedContent) throws {
+        self.id = try content.value(String.self, forProperty: "id")
+        self.tool = try content.value(String.self, forProperty: "tool")
+        self.inputs = try content.value([String].self, forProperty: "inputs")
+        self.format = try content.value(String?.self, forProperty: "format")
+        self.grayscale = try content.value(Bool?.self, forProperty: "grayscale")
+        self.quality = try content.value(Int?.self, forProperty: "quality")
+        self.dependsOn = try content.value([String]?.self, forProperty: "dependsOn")
+    }
+
+    var generatedContent: GeneratedContent {
+        GeneratedContent(properties: [
+            "id": id,
+            "tool": tool,
+            "inputs": inputs,
+            "format": format,
+            "grayscale": grayscale,
+            "quality": quality,
+            "dependsOn": dependsOn
+        ])
     }
 }

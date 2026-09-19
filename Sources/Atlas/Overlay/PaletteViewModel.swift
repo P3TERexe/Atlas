@@ -135,7 +135,10 @@ final class PaletteViewModel: ObservableObject {
                     self.run(pending: self.pendingOperation)
                 } else {
                     self.admit(PendingOperation(id: id, query: query, graph: graph, context: context))
-                    withAnimation { self.isExecuting = false }
+                    withAnimation {
+                        self.plannedGraph = graph
+                        self.isExecuting = false
+                    }
                     self.progress = nil
                 }
             } catch is CancellationError {
@@ -171,7 +174,6 @@ final class PaletteViewModel: ObservableObject {
             return
         }
         let query = pending?.query ?? self.query
-        let id = pending?.id ?? UUID()
         isExecuting = true
         progress = ProgressUpdate(stepIndex: 0, totalSteps: graph.steps.count, message: "Inizializzazione esecuzione...")
         plannedGraph = nil

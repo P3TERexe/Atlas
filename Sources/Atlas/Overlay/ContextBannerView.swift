@@ -27,11 +27,14 @@ struct ContextBannerView: View {
         return counts.sorted { $0.value > $1.value }.map { (ext: $0.key, count: $0.value) }
     }
     
+    private var visibleFilesCount: Int {
+        context?.visibleFiles.count ?? 0
+    }
+
     var body: some View {
-        // Hide banner entirely when no files are selected
-        if selectedFilesCount > 0 {
+        if context?.currentDirectory != nil {
             VStack(alignment: .leading, spacing: 6) {
-                // Compact summary row — tap to expand/collapse
+                // Compact summary row
                 HStack(spacing: 8) {
                     Image(systemName: "folder.fill")
                         .foregroundColor(.accentColor)
@@ -45,29 +48,41 @@ struct ContextBannerView: View {
                         .foregroundColor(.secondary)
                         .font(.system(size: 11))
                     
-                    HStack(spacing: 4) {
-                        ForEach(extensionCounts.prefix(4), id: \.ext) { item in
-                            Text("\(item.count) \(item.ext)")
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.12))
-                                .foregroundColor(.accentColor)
-                                .cornerRadius(4)
+                    if selectedFilesCount > 0 {
+                        HStack(spacing: 4) {
+                            ForEach(extensionCounts.prefix(4), id: \.ext) { item in
+                                Text("\(item.count) \(item.ext)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .foregroundColor(.accentColor)
+                                    .cornerRadius(4)
+                            }
                         }
+                    } else {
+                        Text("\(visibleFilesCount) elementi")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
                     }
                     
                     Spacer()
                     
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(.secondary)
+                    if selectedFilesCount > 0 {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .contentShape(Rectangle())
-                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }
+                .onTapGesture {
+                    if selectedFilesCount > 0 {
+                        withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                    }
+                }
                 
                 // File list — always collapsed by default, toggle on tap
-                if isExpanded {
+                if isExpanded && selectedFilesCount > 0 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(selectedFiles, id: \.self) { url in

@@ -65,6 +65,38 @@ class ImagePlugin: AtlasPlugin {
     }
 }
 
+private actor ConversionJournal {
+    private(set) var converted: [URL] = []
+    private var stagedTemps: Set<URL> = []
+    private var completedCount: Int = 0
+    let totalCount: Int
+
+    init(totalCount: Int) {
+        self.totalCount = totalCount
+    }
+
+    func stage(temp: URL) {
+        stagedTemps.insert(temp)
+    }
+
+    func commit(temp: URL, destination: URL) {
+        stagedTemps.remove(temp)
+        converted.append(destination)
+        completedCount += 1
+    }
+
+    func rollbackTemps() {
+        for temp in stagedTemps {
+            try? FileManager.default.removeItem(at: temp)
+        }
+        stagedTemps.removeAll()
+    }
+
+    func currentProgress() -> Int {
+        completedCount
+    }
+}
+
 final class ConvertImageAction: ActionExecutor {
     func validate(step: ActionStep, context: FinderContext) throws {
         _ = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.image)
@@ -89,40 +121,95 @@ final class ConvertImageAction: ActionExecutor {
     
     func execute(step: ActionStep, context: FinderContext, progress: ItemProgressCallback?) async throws -> ActionResult {
         let inputURLs = try InputResolver.resolve(step: step, context: context, extensions: MediaFormats.image)
-
         let isGrayscale = step.grayscale == true
-        var converted: [URL] = []
+        let total = inputURLs.count
+        let journal = ConversionJournal(totalCount: total)
+
+        let maxConcurrent = min(total, max(2, ProcessInfo.processInfo.activeProcessorCount))
+
         do {
-            for (index, inputURL) in inputURLs.enumerated() {
-                try Task.checkCancellation()
-                progress?(index + 1, inputURLs.count, "Elaborazione \(index + 1)/\(inputURLs.count): \(inputURL.lastPathComponent)")
-                let format = step.format ?? inputURL.pathExtension
-                let type = try Self.destinationType(format)
-                let source = try ImageEncoding.source(at: inputURL)
-                let count = CGImageSourceGetCount(source)
-                guard count == 1 || ["public.tiff", "com.compuserve.gif", "public.png", "org.webmproject.webp"].contains(type) else {
-                    throw ExecutorError.executionFailed("\(inputURL.lastPathComponent) contiene \(count) frame; il formato \(format) non li può conservare. Nessuna conversione eseguita.")
-                }
-                let native = ImageEncoding.canWrite(type)
-                guard native || count == 1 else {
-                    throw ExecutorError.executionFailed("ImageIO non può scrivere \(format) conservando tutti i frame.")
-                }
-                let output = outputURL(for: inputURL, extensionName: outputExtension(format), isGrayscale: isGrayscale)
-                try await StagedOutput.write(to: output, journal: &converted) { temporary in
-                    if native {
-                        try self.convertImageIO(source: source, outputURL: temporary, type: type, grayscale: isGrayscale, quality: step.quality)
-                    } else {
-                        try await self.convertCLIFallback(inputURL: inputURL, outputURL: temporary, format: format, grayscale: isGrayscale)
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                var iterator = inputURLs.makeIterator()
+
+                for _ in 0..<maxConcurrent {
+                    if let nextURL = iterator.next() {
+                        group.addTask {
+                            try await self.processSingleImage(
+                                inputURL: nextURL,
+                                step: step,
+                                isGrayscale: isGrayscale,
+                                journal: journal,
+                                progress: progress
+                            )
+                        }
                     }
-                    try ImageEncoding.validate(at: temporary, type: type, count: count)
+                }
+
+                while let _ = try await group.next() {
+                    if let nextURL = iterator.next() {
+                        group.addTask {
+                            try await self.processSingleImage(
+                                inputURL: nextURL,
+                                step: step,
+                                isGrayscale: isGrayscale,
+                                journal: journal,
+                                progress: progress
+                            )
+                        }
+                    }
                 }
             }
         } catch {
-            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: converted, message: nil))
+            await journal.rollbackTemps()
+            let partial = await journal.converted
+            throw ActionExecutionError(underlying: error, partialResult: ActionResult(success: false, outputFiles: partial, message: nil))
         }
 
+        let converted = await journal.converted
         let label = isGrayscale ? "in Bianco e Nero" : "nel formato specificato"
         return ActionResult(success: true, outputFiles: converted, message: "Elaborate \(converted.count) immagini \(label)")
+    }
+
+    private func processSingleImage(
+        inputURL: URL,
+        step: ActionStep,
+        isGrayscale: Bool,
+        journal: ConversionJournal,
+        progress: ItemProgressCallback?
+    ) async throws {
+        try Task.checkCancellation()
+        let format = step.format ?? inputURL.pathExtension
+        let type = try Self.destinationType(format)
+        let source = try ImageEncoding.source(at: inputURL)
+        let count = CGImageSourceGetCount(source)
+        guard count == 1 || ["public.tiff", "com.compuserve.gif", "public.png", "org.webmproject.webp"].contains(type) else {
+            throw ExecutorError.executionFailed("\(inputURL.lastPathComponent) contiene \(count) frame; il formato \(format) non li può conservare. Nessuna conversione eseguita.")
+        }
+        let native = ImageEncoding.canWrite(type)
+        guard native || count == 1 else {
+            throw ExecutorError.executionFailed("ImageIO non può scrivere \(format) conservando tutti i frame.")
+        }
+        let output = outputURL(for: inputURL, extensionName: outputExtension(format), isGrayscale: isGrayscale)
+        var temporary = output.deletingLastPathComponent().appendingPathComponent(".atlas-output-\(UUID().uuidString)")
+        if !output.pathExtension.isEmpty {
+            temporary.appendPathExtension(output.pathExtension)
+        }
+        await journal.stage(temp: temporary)
+
+        if native {
+            try convertImageIO(source: source, outputURL: temporary, type: type, grayscale: isGrayscale, quality: step.quality)
+        } else {
+            try await convertCLIFallback(inputURL: inputURL, outputURL: temporary, format: format, grayscale: isGrayscale)
+        }
+        try ImageEncoding.validate(at: temporary, type: type, count: count)
+
+        try Task.checkCancellation()
+        try FileManager.default.moveItem(at: temporary, to: output)
+        await journal.commit(temp: temporary, destination: output)
+
+        let current = await journal.currentProgress()
+        let total = journal.totalCount
+        progress?(current, total, "Elaborazione \(current)/\(total): \(inputURL.lastPathComponent)")
     }
     
     // MARK: - Native ImageIO Engine (Supports Grayscale / Black & White)

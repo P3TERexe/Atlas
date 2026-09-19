@@ -97,7 +97,7 @@ struct CommandPaletteView: View {
                         PreviewView(
                             graph: graph,
                             context: vm.cachedContext ?? FinderContext(currentDirectory: nil, selectedFiles: [], visibleFiles: [], installedTools: [], timestamp: Date()),
-                            onExecute: { vm.executeGraph(graph) },
+                            onExecute: { vm.confirmPendingOperation() },
                             onCancel: {
                                 vm.plannedGraph = nil
                                 vm.query = ""

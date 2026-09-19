@@ -1,5 +1,4 @@
 import XCTest
-import Synchronization
 @testable import Atlas
 
 /// Provider contracts use isolated URLProtocol sessions; no real network calls.
@@ -316,12 +315,23 @@ final class ToolCallingTests: XCTestCase, @unchecked Sendable {
     }
 }
 
+private final class Locked<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+    init(_ value: T) { self.value = value }
+    func withLock<R>(_ body: (inout T) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 private final class ProviderHTTPStub: Sendable {
     static let graphJSON = #"{"steps":[{"id":"a","tool":"file.zip","inputs":[]}]}"#
     static let openAIResponse = try! JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": graphJSON]]]])
-    private static let registry = Mutex<[String: ProviderHTTPStub]>([:])
+    private static let registry = Locked<[String: ProviderHTTPStub]>([:])
     private let id = UUID().uuidString
-    private let requests = Mutex<[Data]>([])
+    private let requests = Locked<[Data]>([])
     let status: Int
     let body: Data
     let error: URLError?

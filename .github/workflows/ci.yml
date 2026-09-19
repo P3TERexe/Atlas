@@ -12,27 +12,26 @@ concurrency:
 jobs:
   test:
     name: Build & Test (macOS)
-    runs-on: macos-26
+    runs-on: macos-14
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: |
-          sudo xcode-select -s /Applications/Xcode_26.app || true
-          swift --version
+      - name: Print Swift version
+        run: swift --version
 
       - name: Build
         run: swift build -v
 
-      - name: Test
+      - name: Run Test Suite
+        run: swift test
+
       - name: Build app bundle
         run: make build
-          test -f .build/Atlas.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle/Contents/Info.plist
+
       - name: Verify app bundle
         run: |
           test -x .build/Atlas.app/Contents/MacOS/Atlas
           test -f .build/Atlas.app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle/Contents/Info.plist
-          plutil -extract LSMinimumSystemVersion raw .build/Atlas.app/Contents/Info.plist | grep -qx 26.0
+          plutil -extract LSMinimumSystemVersion raw .build/Atlas.app/Contents/Info.plist | grep -qx 14.0
           codesign --verify --deep --strict .build/Atlas.app
-        run: swift test

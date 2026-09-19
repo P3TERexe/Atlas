@@ -16,16 +16,37 @@ enum BinaryLocator {
         "/sbin"
     ]
 
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: String] = [:]
+
     /// Returns the first existing absolute path whose `lastPathComponent`
     /// equals `name`, or `nil` if no fixed directory contains it.
-    /// NEVER consults `$PATH`.
+    /// Thread-safe and cached in memory. NEVER consults `$PATH`.
     static func locate(_ name: String) -> String? {
+        lock.lock()
+        if let cached = cache[name] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         for directory in searchDirectories {
             let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name)
             if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return candidate.path
+                let path = candidate.path
+                lock.lock()
+                cache[name] = path
+                lock.unlock()
+                return path
             }
         }
         return nil
+    }
+
+    /// Clears the in-memory cache.
+    static func clearCache() {
+        lock.lock()
+        cache.removeAll()
+        lock.unlock()
     }
 }

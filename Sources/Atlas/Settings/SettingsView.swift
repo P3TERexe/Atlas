@@ -13,6 +13,12 @@ struct SettingsView: View {
                     Label("Provider AI", systemImage: "cpu")
                 }
 
+            // MARK: - Tab Regole
+            RulesSettingsTab(rulesStore: RulesStore.shared)
+                .tabItem {
+                    Label("Regole", systemImage: "list.bullet.rectangle")
+                }
+
             // MARK: - Tab Informazioni
             VStack(spacing: 16) {
                 Image(systemName: "sparkles")

@@ -57,8 +57,8 @@ final class SecurityFixTests: XCTestCase {
         // "2 x 3" → moltiplicazione; "x" dentro parole NON deve diventare "*"
         XCTAssertEqual(CalcShellAction.sanitizeBcExpression("2 x 3"), "2 * 3")
         XCTAssertEqual(CalcShellAction.sanitizeBcExpression("esempio di testo"), "esempio di testo")
-        XCTAssertEqual(CalcShellAction.sanitizeBcExpression("15%"), "(0.15)")
-        XCTAssertTrue(CalcShellAction.sanitizeBcExpression("15% di 80").contains("(0.15)"))
+        XCTAssertEqual(CalcShellAction.sanitizeBcExpression("15%"), "(15/100)")
+        XCTAssertTrue(CalcShellAction.sanitizeBcExpression("15% di 80").contains("(15/100)"))
     }
 
     // MARK: - Transaction rollback idempotency

@@ -53,6 +53,35 @@ final class RulesStore: ObservableObject {
         }
     }
     
+    func add(rule: UserRule) {
+        rules.append(rule)
+        save()
+    }
+    
+    func update(rule: UserRule) {
+        if let index = rules.firstIndex(where: { $0.id == rule.id }) {
+            rules[index] = rule
+            save()
+        }
+    }
+    
+    func delete(at offsets: IndexSet) {
+        rules.remove(atOffsets: offsets)
+        save()
+    }
+
+    func delete(id: UUID) {
+        rules.removeAll { $0.id == id }
+        save()
+    }
+    
+    func toggle(id: UUID) {
+        if let index = rules.firstIndex(where: { $0.id == id }) {
+            rules[index].isEnabled.toggle()
+            save()
+        }
+    }
+
     // MARK: - Persistence
     
     private func load() {
