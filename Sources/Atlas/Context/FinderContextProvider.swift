@@ -20,16 +20,55 @@ struct FinderContextProvider {
         function run() {
             const finder = Application('Finder');
             function filePath(item) {
-                const url = $.NSURL.URLWithString(item.url());
-                if (!url || !url.isFileURL) {
-                    throw new Error('Finder did not return a file URL.');
+                try {
+                    if (!item) return null;
+                    const rawUrl = item.url ? item.url() : null;
+                    if (!rawUrl) return null;
+                    const url = $.NSURL.URLWithString(rawUrl);
+                    if (!url || !url.isFileURL) return null;
+                    return ObjC.unwrap(url.path);
+                } catch (e) {
+                    return null;
                 }
-                return ObjC.unwrap(url.path);
             }
-            const directory = finder.finderWindows.length > 0
-                ? filePath(finder.finderWindows[0].target())
-                : filePath(finder.desktop);
-            const selected = finder.selection().map(filePath);
+
+            let directory = null;
+            try {
+                const windows = finder.finderWindows;
+                for (let i = 0; i < windows.length; i++) {
+                    try {
+                        const p = filePath(windows[i].target());
+                        if (p) {
+                            directory = p;
+                            break;
+                        }
+                    } catch (e) {}
+                }
+            } catch (e) {}
+
+            if (!directory) {
+                try {
+                    directory = filePath(finder.insertionLocation());
+                } catch (e) {}
+            }
+            if (!directory) {
+                try {
+                    directory = filePath(finder.desktop);
+                } catch (e) {}
+            }
+            if (!directory) {
+                directory = ObjC.unwrap($.NSHomeDirectory());
+            }
+
+            let selected = [];
+            try {
+                const sel = finder.selection();
+                for (let i = 0; i < sel.length; i++) {
+                    const p = filePath(sel[i]);
+                    if (p) selected.push(p);
+                }
+            } catch (e) {}
+
             return JSON.stringify({directory: directory, selected: selected});
         }
         """
