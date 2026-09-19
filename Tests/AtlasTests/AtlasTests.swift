@@ -260,6 +260,43 @@ final class AtlasTests: XCTestCase {
         let graph = try XCTUnwrap(InstantActionParser.parse(query: "jpg", context: context))
         XCTAssertEqual(graph.steps[0].inputs, [external.path])
     }
+
+    func testNaturalLanguageInstantActionParsing() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let photo1 = directory.appendingPathComponent("img1.png")
+        let photo2 = directory.appendingPathComponent("img2.jpg")
+        let context = FinderContext(currentDirectory: directory, selectedFiles: [photo1, photo2], visibleFiles: [photo1, photo2], installedTools: [], timestamp: Date())
+
+        // 1. "converti le immagini in jpg"
+        let g1 = try XCTUnwrap(InstantActionParser.parse(query: "converti le immagini in jpg", context: context))
+        XCTAssertEqual(g1.steps[0].tool, "image.convert")
+        XCTAssertEqual(g1.steps[0].format, "jpg")
+
+        // 2. "converti in bianco e nero"
+        let g2 = try XCTUnwrap(InstantActionParser.parse(query: "converti in bianco e nero", context: context))
+        XCTAssertEqual(g2.steps[0].tool, "image.convert")
+        XCTAssertTrue(g2.steps[0].grayscale ?? false)
+
+        // 3. "fai una cartella Progetti"
+        let g3 = try XCTUnwrap(InstantActionParser.parse(query: "fai una cartella Progetti", context: context))
+        XCTAssertEqual(g3.steps[0].tool, "file.mkdir")
+        XCTAssertEqual(g3.steps[0].format, "Progetti")
+
+        // 4. "sposta le foto in Archivio"
+        let g4 = try XCTUnwrap(InstantActionParser.parse(query: "sposta le foto in Archivio", context: context))
+        XCTAssertEqual(g4.steps[0].tool, "file.move")
+        XCTAssertEqual(g4.steps[0].format, "Archivio")
+
+        // 5. Composite: folder + bw
+        let g5 = try XCTUnwrap(InstantActionParser.parse(query: "fai una cartella e aggiungi una versione in bianco e nero di tutte le foto la cartella deve chiamarsi caccona galattica", context: context))
+        XCTAssertEqual(g5.steps.count, 3)
+        XCTAssertEqual(g5.steps[0].tool, "file.mkdir")
+        XCTAssertEqual(g5.steps[0].format, "caccona galattica")
+        XCTAssertEqual(g5.steps[1].tool, "image.convert")
+        XCTAssertTrue(g5.steps[1].grayscale ?? false)
+        XCTAssertEqual(g5.steps[2].tool, "file.move")
+        XCTAssertEqual(g5.steps[2].format, "caccona galattica")
+    }
     
     // MARK: - FinderSelector
     

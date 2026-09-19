@@ -212,6 +212,14 @@ struct NvidiaSection: View {
                 .fixedSize()
             }
 
+            if settings.nvidiaModel != "meta/llama-3.3-70b-instruct" {
+                Button("⚡ Ripristina modello veloce (Llama 3.3 70B)") {
+                    settings.nvidiaModel = "meta/llama-3.3-70b-instruct"
+                }
+                .font(.caption)
+                .buttonStyle(.link)
+            }
+
             APIActionRow(
                 hasKey: !settings.nvidiaApiKey.isEmpty,
                 isTesting: isTesting,

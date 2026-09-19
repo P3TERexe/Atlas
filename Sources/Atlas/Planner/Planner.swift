@@ -37,9 +37,9 @@ class Planner {
         if lower.isEmpty { return QueryComplexity(isComplex: false, reason: nil) }
         
         // Language-Agnostic Structural Detection:
-        // 1. Multiple clause separators (commas, semicolons, dashes, line breaks)
-        let clauseSeparators = CharacterSet(charactersIn: ",;—–-\n")
-        let clauses = lower.components(separatedBy: clauseSeparators).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        // 1. Multiple clause separators (semicolons, conjunction words like ' e ', ' ed ', ' and ', ' poi ', ' then ', ' dopo ')
+        let conjunctionRegex = try? NSRegularExpression(pattern: #"\b(e|ed|and|poi|then|dopo)\b|[;|\n]"#, options: [.caseInsensitive])
+        let conjunctionMatches = conjunctionRegex?.matches(in: lower, range: NSRange(lower.startIndex..., in: lower)).count ?? 0
         
         // 2. Numerical repetition / count requests in any language (e.g. "7 copies", "10 volte", "3 files", "5x", "100MB")
         let hasNumberPattern = lower.range(of: "\\b\\d+\\b", options: .regularExpression) != nil
@@ -48,12 +48,12 @@ class Planner {
         let words = lower.components(separatedBy: .whitespacesAndNewlines).filter({ !$0.isEmpty })
         let wordCount = words.count
         
-        let isMultiClause = clauses.count > 1 || (hasNumberPattern && wordCount > 4)
+        let isMultiClause = conjunctionMatches > 0 || (hasNumberPattern && wordCount > 4)
         
         if isMultiClause || wordCount > 15 {
             return QueryComplexity(
                 isComplex: true,
-                reason: "Query multilingua con sequenza di azioni o parametri numerici"
+                reason: "Query con sequenza di azioni o parametri numerici"
             )
         }
         
@@ -61,13 +61,15 @@ class Planner {
     }
     
     func plan(query: String, context: FinderContext) async throws -> ActionGraph {
+        let startTime = CFAbsoluteTimeGetCurrent()
         let activeRules = RulesStore.shared.activeRules(for: query, currentFolder: context.currentDirectory?.path)
         if activeRules.isEmpty, let instantGraph = InstantActionParser.parse(query: query, context: context) {
             let sorted = try instantGraph.topologicallySorted()
             try PlanValidator.validate(graph: sorted, query: query, context: context)
             lastPrompt = "[INSTANT LOCAL PARSER (0ms)]"
             lastResponse = "Piano generato; strumenti e input controllati"
-            print("[Atlas][Planner] ⚡ instant parser hit: tool=\(instantGraph.steps.first?.tool ?? "?") inputs=\(instantGraph.steps.first?.inputs.count ?? 0)")
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            print("[Atlas][Planner] ⚡ instant parser hit in \(String(format: "%.3f", duration))s: tool=\(instantGraph.steps.first?.tool ?? "?") inputs=\(instantGraph.steps.first?.inputs.count ?? 0)")
             return sorted
         }
         print("[Atlas][Planner] ⚡ instant parser MISS → LLM path (visibleFiles=\(context.visibleFiles.count) selected=\(context.selectedFiles.count) dir=\(context.currentDirectory?.path ?? "nil"))")
@@ -87,7 +89,7 @@ class Planner {
         case .apple:
             AppleModelProvider()
         case .opencode:
-            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel, toolIds: toolIds)
+            OpenCodeModelProvider(apiKey: settings.openCodeApiKey, model: settings.openCodeModel, toolIds: toolIds, disableThinking: settings.disableThinking)
         case .ollama:
             OllamaModelProvider(endpoint: settings.ollamaEndpoint, model: settings.ollamaModel, toolIds: toolIds, disableThinking: settings.disableThinking)
         case .openai:
@@ -95,9 +97,9 @@ class Planner {
         case .claude:
             ClaudeModelProvider(apiKey: settings.claudeApiKey, toolIds: toolIds)
         case .nvidia:
-            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: toolIds)
+            NvidiaModelProvider(apiKey: settings.nvidiaApiKey, model: settings.nvidiaModel, toolIds: toolIds, disableThinking: settings.disableThinking)
         case .openaiCompatible:
-            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds)
+            OpenAICompatibleModelProvider(baseURL: settings.customBaseURL, model: settings.customModel, apiKey: settings.customApiKey, toolIds: toolIds, disableThinking: settings.disableThinking)
         }
         
         do {
@@ -108,6 +110,8 @@ class Planner {
                 let sorted = try graph.topologicallySorted()
                 try PlanValidator.validate(graph: sorted, query: query, context: context)
                 lastResponse = "Piano generato; strumenti e input controllati"
+                let duration = CFAbsoluteTimeGetCurrent() - startTime
+                print("[Atlas][Planner] ⏱ LLM plan completed in \(String(format: "%.2f", duration))s")
                 return sorted
             } catch {
                 try Task.checkCancellation()
@@ -130,6 +134,8 @@ class Planner {
                 let secondSorted = try secondGraph.topologicallySorted()
                 try PlanValidator.validate(graph: secondSorted, query: query, context: context)
                 lastResponse = "Piano generato; strumenti e input controllati"
+                let duration = CFAbsoluteTimeGetCurrent() - startTime
+                print("[Atlas][Planner] ⏱ LLM plan retry completed in \(String(format: "%.2f", duration))s")
                 return secondSorted
             }
         } catch {

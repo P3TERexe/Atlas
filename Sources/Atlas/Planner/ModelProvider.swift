@@ -518,22 +518,25 @@ struct NvidiaModelProvider: ModelProvider {
     var session: URLSession
     /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
     var toolIds: [String] = []
+    var disableThinking: Bool = false
 
-    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct", toolIds: [String] = [], session: URLSession = .shared) {
-        self.apiKey = apiKey
-        if model.isEmpty || model.contains("deepseek-v4-flash") {
+    init(apiKey: String, model: String = "meta/llama-3.3-70b-instruct", toolIds: [String] = [], disableThinking: Bool = false, session: URLSession = .shared) {
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedModel.isEmpty || trimmedModel.contains("deepseek-v4-flash") {
             self.model = "meta/llama-3.3-70b-instruct"
         } else {
-            self.model = model
+            self.model = trimmedModel
         }
         self.toolIds = toolIds
+        self.disableThinking = disableThinking
         self.session = session
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
     /// identico al flusso prompt-JSON storico.
     static func makeBody(prompt: String, isComplex: Bool, model: String,
-                         toolParameters: [String: Any]?) -> [String: Any] {
+                         toolParameters: [String: Any]?, disableThinking: Bool = false) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -551,7 +554,7 @@ struct NvidiaModelProvider: ModelProvider {
             "temperature": 0.0,
             "max_tokens": isComplex ? 2048 : 1200
         ]
-        if !isComplex {
+        if !isComplex || disableThinking {
             body["thinking"] = ["type": "disabled"]
         }
         if let params = toolParameters {
@@ -578,7 +581,8 @@ struct NvidiaModelProvider: ModelProvider {
             prompt: prompt,
             isComplex: isComplex,
             model: model,
-            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds),
+            disableThinking: disableThinking
         )
 
         
@@ -652,18 +656,20 @@ struct OpenAICompatibleModelProvider: ModelProvider {
     var apiKey: String
     /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
     var toolIds: [String] = []
+    var disableThinking: Bool = false
 
-    init(baseURL: String, model: String, apiKey: String, toolIds: [String] = []) {
-        self.baseURL = baseURL
-        self.model = model
-        self.apiKey = apiKey
+    init(baseURL: String, model: String, apiKey: String, toolIds: [String] = [], disableThinking: Bool = false) {
+        self.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         self.toolIds = toolIds
+        self.disableThinking = disableThinking
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
     /// identico al flusso prompt-JSON storico.
     static func makeBody(prompt: String, isComplex: Bool, model: String,
-                         toolParameters: [String: Any]?) -> [String: Any] {
+                         toolParameters: [String: Any]?, disableThinking: Bool = false) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -696,7 +702,7 @@ struct OpenAICompatibleModelProvider: ModelProvider {
             "temperature": 0.0,
             "max_tokens": isComplex ? 3500 : 1200
         ]
-        if !isComplex {
+        if !isComplex || disableThinking {
             body["thinking"] = ["type": "disabled"]
             body["reasoning_effort"] = "low"
         }
@@ -732,7 +738,7 @@ struct OpenAICompatibleModelProvider: ModelProvider {
             : normalizedBase + "/chat/completions"
         
         guard let url = URL(string: urlString) else {
-            throw PlannerError.llmError("Base URL non valido: \(baseURL)")
+            throw PlannerError.llmError("URL Provider Custom non valido: \(urlString)")
         }
         
 
@@ -740,7 +746,8 @@ struct OpenAICompatibleModelProvider: ModelProvider {
             prompt: prompt,
             isComplex: isComplex,
             model: activeModel,
-            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds),
+            disableThinking: disableThinking
         )
 
         
@@ -782,17 +789,19 @@ struct OpenCodeModelProvider: ModelProvider {
     var model: String
     /// ID dei tool registrati; vuoto = nessun tool calling (payload legacy).
     var toolIds: [String] = []
+    var disableThinking: Bool = false
 
-    init(apiKey: String, model: String = "deepseek-v4-flash-free", toolIds: [String] = []) {
-        self.apiKey = apiKey
-        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "deepseek-v4-flash-free" : model
+    init(apiKey: String, model: String = "deepseek-v4-flash-free", toolIds: [String] = [], disableThinking: Bool = false) {
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "deepseek-v4-flash-free" : model.trimmingCharacters(in: .whitespacesAndNewlines)
         self.toolIds = toolIds
+        self.disableThinking = disableThinking
     }
 
     /// Body-builder testabile. Con `toolParameters == nil` il payload è
     /// identico al flusso prompt-JSON storico.
     static func makeBody(prompt: String, isComplex: Bool, model: String,
-                         toolParameters: [String: Any]?) -> [String: Any] {
+                         toolParameters: [String: Any]?, disableThinking: Bool = false) -> [String: Any] {
         let messages: [[String: Any]] = [
             [
                 "role": "system",
@@ -823,8 +832,11 @@ struct OpenCodeModelProvider: ModelProvider {
             "messages": messages,
             "temperature": 0.0,
             "max_tokens": isComplex ? 3500 : 2500,
-            "reasoning_effort": isComplex ? "medium" : "low"
+            "reasoning_effort": (isComplex && !disableThinking) ? "medium" : "low"
         ]
+        if !isComplex || disableThinking {
+            body["thinking"] = ["type": "disabled"]
+        }
         if let params = toolParameters {
             // Tool calling attivo: response_format json_object è ridondante e
             // alcuni endpoint rifiutano la combinazione.
@@ -858,7 +870,8 @@ struct OpenCodeModelProvider: ModelProvider {
             prompt: prompt,
             isComplex: isComplex,
             model: model,
-            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds)
+            toolParameters: toolIds.isEmpty ? nil : PlanToolSchema.parametersJSON(toolIds: toolIds),
+            disableThinking: disableThinking
         )
 
         

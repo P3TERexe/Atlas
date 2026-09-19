@@ -112,7 +112,11 @@ final class PaletteViewModel: ObservableObject {
             print("[Atlas][UI] ▶ planning start query=\"\(query)\"")
             let context: FinderContext
             do {
-                context = try await self.contextProvider.getCurrentContext()
+                if let cached = self.cachedContext, Date().timeIntervalSince(cached.timestamp) < 3.0 {
+                    context = cached
+                } else {
+                    context = try await self.contextProvider.getCurrentContext()
+                }
             } catch {
                 self.failPlanning(id: id, message: error.localizedDescription)
                 return

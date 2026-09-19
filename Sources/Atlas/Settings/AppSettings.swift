@@ -27,6 +27,11 @@ final class AppSettings: ObservableObject {
     
     @Published var nvidiaModel: String {
         didSet {
+            let trimmed = nvidiaModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != nvidiaModel {
+                nvidiaModel = trimmed
+                return
+            }
             if nvidiaModel != oldValue {
                 defaults.set(nvidiaModel, forKey: "nvidia_model")
             }
@@ -77,6 +82,11 @@ final class AppSettings: ObservableObject {
     
     @Published var customModel: String {
         didSet {
+            let trimmed = customModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed != customModel {
+                customModel = trimmed
+                return
+            }
             if customModel != oldValue {
                 defaults.set(customModel, forKey: "custom_model")
             }
@@ -133,12 +143,13 @@ final class AppSettings: ObservableObject {
         self.nvidiaApiKey = KeychainStore.load(key: "nvidia_api_key") ?? ""
         self.openCodeApiKey = KeychainStore.load(key: "opencode_api_key") ?? ""
         self.customApiKey = KeychainStore.load(key: "custom_api_key") ?? ""
-        self.nvidiaModel = defaults.string(forKey: "nvidia_model") ?? "meta/llama-3.3-70b-instruct"
-        self.openCodeModel = defaults.string(forKey: "opencode_model") ?? "deepseek-v4-flash-free"
-        self.ollamaEndpoint = defaults.string(forKey: "ollama_endpoint") ?? "http://localhost:11434/api/generate"
-        self.ollamaModel = defaults.string(forKey: "ollama_model") ?? "llama3"
-        self.customBaseURL = defaults.string(forKey: "custom_base_url") ?? "https://api.openai.com/v1"
-        self.customModel = defaults.string(forKey: "custom_model") ?? ""
+        let rawNvidia = defaults.string(forKey: "nvidia_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.nvidiaModel = rawNvidia.isEmpty ? "meta/llama-3.3-70b-instruct" : rawNvidia
+        self.openCodeModel = defaults.string(forKey: "opencode_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "deepseek-v4-flash-free"
+        self.ollamaEndpoint = defaults.string(forKey: "ollama_endpoint")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "http://localhost:11434/api/generate"
+        self.ollamaModel = defaults.string(forKey: "ollama_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "llama3"
+        self.customBaseURL = defaults.string(forKey: "custom_base_url")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "https://api.openai.com/v1"
+        self.customModel = defaults.string(forKey: "custom_model")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         
         if let raw = defaults.string(forKey: "default_provider"), let provider = AIProvider(rawValue: raw) {
             self.defaultProvider = provider
